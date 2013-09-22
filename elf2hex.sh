@@ -12,7 +12,7 @@ if [[ -z "$1" || -z "$2" ]]; then
 fi
 temp=`mktemp`
 
-nios2-elf-objcopy -j.entry -j.text -j.data -j.bss $1 $temp
+nios2-elf-objcopy -j.entry -j.text -j.rodata -j.rwdata -j.bss $1 $temp
 result=$?
 if [[ $result -ne 0 ]]; then
   rm -f $temp
