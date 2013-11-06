@@ -48,6 +48,7 @@
 #define r_p_paddr		r14
 #define r_p_filesz		r15
 #define r_epcs_base		r16
+#define r_p_memsz		r17
 
 #define ELF_HEADER_LE		0x464c457f
 #define ET_EXEC				2
@@ -219,6 +220,8 @@ load_program_header:
 	mov		r_p_paddr, r_read_data
 	RCALL	epcs_txrx_word			// p_filesz
 	mov		r_p_filesz, r_read_data
+	RCALL	epcs_txrx_word			// p_memsz
+	mov		r_p_memsz, r_read_data
 	EPCS_CLOSE
 
 	// Load section data
@@ -229,7 +232,16 @@ load_program_header:
 	stw		r_read_data, 0(r_p_paddr)
 	addi	r_p_paddr, r_p_paddr, 4
 	addi	r_p_filesz, r_p_filesz, -4
+	addi	r_p_memsz, r_p_memsz, -4
 	blt		r_zero, r_p_filesz, 1b
+
+	// Fill remainder area after file image
+	bge		r_zero, r_p_memsz, 2f
+1:	stw		r_zero, 0(r_p_paddr)
+	addi	r_p_paddr, r_p_paddr, 4
+	addi	r_p_memsz, r_p_memsz, -4
+	blt		r_zero, r_p_memsz, 1b
+2:
 
 next_program_header:
 	EPCS_CLOSE
