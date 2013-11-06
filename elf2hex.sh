@@ -6,21 +6,31 @@
 # This script converts file format with keeping ELF file structure.
 #================================================================================
 
+sections="-j.entry -j.exceptions -j.text -j.rodata -j.rwdata -j.bss"
+
 if [[ -z "$1" || -z "$2" ]]; then
   echo "usage: $0 <input-file> <output-file>"
   exit 1
 fi
-temp=`mktemp`
+if [[ -z "$3" ]]; then
+  temp=`mktemp`
+else
+  temp="$3"
+fi
 
-nios2-elf-objcopy -j.entry -j.text -j.rodata -j.rwdata -j.bss $1 $temp
+nios2-elf-objcopy $sections $1 $temp
 result=$?
 if [[ $result -ne 0 ]]; then
-  rm -f $temp
+  if [[ -z "$3" ]]; then
+    rm -f $temp
+  fi
   exit $result
 fi
 
 nios2-elf-objcopy -Ibinary -Oihex $temp $2
 result=$?
-rm -f $temp
+if [[ -z "$3" ]]; then
+  rm -f $temp
+fi
 exit $result
 
