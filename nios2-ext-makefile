@@ -108,7 +108,7 @@ def ext_makefile(args)
   puts "Info: Modifying Makefile"
   open("Makefile", "w") {|f|
     f.print(mk[:b].join(''))
-    f.puts(MAKE_TEMPLATE % flash)
+    f.puts(MAKE_TEMPLATE % flash.downcase)
     f.print(mk[:a].join(''))
   }
   puts "Info: Complete."
