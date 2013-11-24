@@ -39,7 +39,14 @@ def gen_bootldr(args)
   cmd += " #{src}/epcs/epcs_bootloader.S"
   do_cmd.call(cmd)
   do_cmd.call("nios2-elf-objcopy -O ihex #{out}.tmp")
-  do_cmd.call("ruby #{src}/convert_hex.rb -l -d #{words} < #{out}.tmp > #{out}.hex")
+  open("#{out}.hex", "w") {|o|
+    o.puts("; This file is created by #{File.basename(__FILE__)}")
+    o.puts("; Configuration:")
+    o.puts(";   EPCS_BOOTROM_WORDS = 0x%x" % words)
+    o.puts(";   EPCS_ELF_SECTORS   = #{args[:sectors]}") if args[:sectors]
+    o.puts(";   EPCS_ELF_BYTES     = #{args[:bytes]}") if args[:bytes]
+  }
+  do_cmd.call("ruby #{src}/convert_hex.rb -l -d #{words} < #{out}.tmp >> #{out}.hex")
   do_cmd.call("rm #{out}.tmp")
   puts "Info: Completed."
   puts "Info: Bootloader is located at '#{out}.hex'"
