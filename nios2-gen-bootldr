@@ -1,0 +1,65 @@
+#!/usr/bin/env ruby
+#================================================================================
+# NiosII Bootloader Generator
+#================================================================================
+require 'optparse'
+require 'rexml/document'
+
+def gen_bootldr(args)
+  file = args[:sopcinfo]
+  puts "Info: Loading #{file}"
+  doc = REXML::Document.new(open(file))
+  epcs = nil
+  REXML::XPath.each(doc, '//module[@kind="altera_avalon_epcs_flash_controller"]') {|mod|
+    next if (args[:instance] and args[:instance] != mod.attribute("name"))
+    abort "Error: You must specify an instance name by '-i <name>' option." if epcs
+    epcs = mod
+    break if args[:instance]
+  }
+  abort "Error: No epcs_flash_controller found." if !epcs
+  as = {}
+  REXML::XPath.each(epcs, 'assignment/name') {|v|
+    as[v.text] = REXML::XPath.first(v.parent, 'value').text
+  }
+  src = File.dirname(File.expand_path(__FILE__))
+  words = as['embeddedsw.CMacro.REGISTER_OFFSET'].to_i / 4
+  out = as['embeddedsw.memoryInfo.MEM_INIT_FILENAME']
+  do_cmd = proc {|cmd|
+    puts "Info: #{cmd}"
+    print `#{cmd}`
+    abort "Error: Command failed (status=#{$?.exitstatus})" if $?.exitstatus != 0
+  }
+  cmd = "nios2-elf-gcc -c -nostartfiles -o #{out}.tmp"
+  cmd += " -DEPCS_BOOTROM_WORDS=#{words}"
+  if(args[:sectors])
+    cmd += " -DEPCS_ELF_SECTORS=#{args[:sectors]}"
+  elsif(args[:bytes])
+    cmd += " -DEPCS_ELF_BYTES=#{args[:bytes]}"
+  end
+  cmd += " #{src}/epcs/epcs_bootloader.S"
+  do_cmd.call(cmd)
+  do_cmd.call("nios2-elf-objcopy -O ihex #{out}.tmp")
+  do_cmd.call("ruby #{src}/convert_hex.rb -l -d #{words} < #{out}.tmp > #{out}.hex")
+  do_cmd.call("rm #{out}.tmp")
+  puts "Info: Completed."
+  puts "Info: Bootloader is located at '#{out}.hex'"
+end
+
+if(__FILE__ == $0)
+  args = {}
+  OptionParser.new {|o|
+    o.on('-i INST') {|v| args[:instance] = v }
+    o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
+    o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
+    o.parse!(ARGV)
+  }
+  if(ARGV.size != 1 or
+      (args[:sectors] and args[:bytes]) or
+      (!args[:sectors] and !args[:bytes]))
+    abort <<EOD 
+Usage: #$0 [-i <epcs_instance_name>] {-s <sectors>|-b <bytes>} <sopcinfo>
+EOD
+  end
+  args[:sopcinfo] = ARGV.first
+  gen_bootldr(args)
+end

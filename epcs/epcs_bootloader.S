@@ -1,6 +1,7 @@
 /**
  * @file epcs_bootloader.S
  * @brief EPCS boot loader
+ * @author kimu_shu
  */
 
 /*
@@ -15,21 +16,25 @@
 /*
  * Length of EPCS Controller's Boot ROM Memory (in words)
  */
-//	.equ EPCS_BOOTROM_WORDS, 0x080	// Cyclone and Cyclone II
-	.equ EPCS_BOOTROM_WORDS, 0x100	// Other device families
+#ifndef EPCS_BOOTROM_WORDS
+//# define EPCS_BOOTROM_WORDS	0x080	// Cyclone and Cyclone II
+# define EPCS_BOOTROM_WORDS	0x100	// Other device families
+#endif
 
+#if !defined(EPCS_ELF_BYTES) && !defined(EPCS_ELF_SECTORS)
 /*
  * Length of ELF area (in bytes)
  * (Comment out if you use EPCS_ELF_SECTORS)
  */
-//	.equ EPCS_ELF_BYTES, 0x4000
+//# define EPCS_ELF_BYTES	0x4000
 
 /*
  * Length of ELF area (in sectors)
  * (Comment out if you use EPCS_ELF_BYTES)
  * (Sector size is automatically detected)
  */
-	.equ EPCS_ELF_SECTORS, 1
+# define EPCS_ELF_SECTORS	1
+#endif
 
 /*
  * Register usage
@@ -58,30 +63,30 @@
 /*
  * EPCS Serial Flash Controller Registers
  */
-	.equ EPCS_RXDATA,			0x00
-	.equ EPCS_TXDATA,			0x04
-	.equ EPCS_STATUS,			0x08
-	.equ EPCS_CONTROL,			0x0c
-	.equ EPCS_STATUS_RRDY,		0x080
-	.equ EPCS_CONTROL_SSO,		0x400
-	.equ EPCS_READ_BYTES,		0x03
-	.equ EPCS_READ_SILICON_ID,	0xab
-	.equ EPCS_READ_DEVICE_ID,	0x9f
+#define EPCS_RXDATA				0x00
+#define EPCS_TXDATA				0x04
+#define EPCS_STATUS				0x08
+#define EPCS_CONTROL			0x0c
+#define EPCS_STATUS_RRDY		0x080
+#define EPCS_CONTROL_SSO		0x400
+#define EPCS_READ_BYTES			0x03
+#define EPCS_READ_SILICON_ID	0xab
+#define EPCS_READ_DEVICE_ID		0x9f
 
 /*
  * Parameter check
  */
-.ifdef EPCS_ELF_BYTES
-	.ifdef EPCS_ELF_SECTORS
-		.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
-		.err
-	.endif
-.else
-	.ifndef EPCS_ELF_SECTORS
-		.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
-		.err
-	.endif
-.endif
+#ifdef EPCS_ELF_BYTES
+# ifdef EPCS_ELF_SECTORS
+	.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
+	.err
+# endif
+#else
+# ifndef EPCS_ELF_SECTORS
+	.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
+	.err
+# endif
+#endif
 
 /*********************************************************************************
  * Macros
@@ -159,11 +164,11 @@ reset:
 	movui	r_elf_base, (1 << 1)
 	sll		r_elf_base, r_elf_base, r_read_data
 
-.ifdef EPCS_ELF_BYTES
+#ifdef EPCS_ELF_BYTES
 	// Calculate ELF base address (EndOfEPCS - EPCS_ELF_BYTES)
 	addi	r_elf_base, r_elf_base, -EPCS_ELF_BYTES
-.endif
-.ifdef EPCS_ELF_SECTORS
+#endif
+#ifdef EPCS_ELF_SECTORS
 	// Calculate ELF base address (EndOfEPCS - SectorSize*EPCS_ELF_SECTORS)
 	addi	r_read_data, r_read_data, 7
 	andi	r_read_data, r_read_data, 8
@@ -172,7 +177,7 @@ reset:
 	MOVI32	r_temp, EPCS_ELF_SECTORS
 	sll		r_temp, r_temp, r_read_data
 	sub		r_elf_base, r_elf_base, r_temp
-.endif
+#endif
 
 	// Check ELF header
 	orhi	r_elf_base, r_elf_base, %hi(EPCS_READ_BYTES << 24)
