@@ -1,0 +1,190 @@
+#!/usr/bin/env ruby
+#================================================================================
+# NiosII Makefile Extender
+#================================================================================
+require 'optparse'
+require 'rexml/document'
+
+MARKER = 'nios2-ext-makefile'
+
+def parse_makefile
+  mk = {:b => [], :a => []}
+  filt = :b
+  bsp = nil
+  elf = nil
+  puts "Info: Parsing current Makefile"
+  open("Makefile").each_line {|line|
+    if(filt == :f)
+      filt = :a if line =~ /^#<\/#{MARKER}>/
+    elsif(line =~ /^#<#{MARKER}>/)
+      filt = :f
+    else
+      mk[filt] << line
+      if(line =~ /^ELF\s*:=\s*(.*)$/ and !elf)
+        elf = $1
+      elsif(line =~ /^BSP_ROOT_DIR\s*:=\s*(.*)$/)
+        bsp = $1
+      end
+    end
+  }
+  raise "ELF not found" if !elf
+  mk[:elf] = elf
+  puts "Info: Target is #{elf}"
+  raise "BSP not found" if !bsp
+  mk[:bsp] = bsp
+  puts "Info: BSP found at #{bsp}"
+  doc = REXML::Document.new(open("#{bsp}settings.bsp"))
+  sopc = bsp + REXML::XPath.first(doc, '//SopcDesignFile').text
+  mk[:sopcinfo] = sopc
+  puts "Info: Loading sopcinfo '#{sopc}'"
+  doc = REXML::Document.new(open("#{sopc}"))
+  device = REXML::XPath.first(doc, '//parameter[@name="AUTO_DEVICE"]/value').text
+  puts "Info: Device is #{device}"
+  mk[:device] = device
+  puts "Info: Makefile has already extended. Extension codes will be replaced." if
+    !mk[:a].empty?
+  mk
+rescue => e
+  abort "Error: #{e}"
+end
+
+def ext_makefile(args)
+  flash = args[:flash].upcase
+  if(flash =~ /^EPCS(1|4|16|64|128)$/)
+    capacity = $1.to_i * 1024 * 1024 / 8
+    case($1.to_i)
+      when 1
+        sector_size = 32 * 1024
+      when 4..64
+        sector_size = 64 * 1024
+      when 128
+        sector_size = 256 * 1024
+    end
+  else
+    abort "Error: Flash device '#{flash}' is not supported"
+  end
+  puts "Info: Flash capacity is 0x%x bytes" % capacity
+  puts "Info: Flash sector size is 0x%x bytes" % sector_size
+  mk = parse_makefile
+  if(mk[:device] =~ /^(EP[1-4]C[A-Z]*\d+)/)
+    loader_dev = $1
+  else
+    abort "Error: This device is not supported"
+  end
+  if(!args[:sectors] and !args[:bytes])
+    puts "Info: Investigating bootloader settings"
+    type, val = nil
+    Dir.glob(mk[:sopcinfo].sub(/\/\w+\.\w+$/, '/*_boot_rom.hex')) {|f|
+      puts "Info: Investigating #{f}"
+      open(f).each_line {|line|
+        if(line =~ /^;\s*EPCS_ELF_(SECTORS|BYTES)\s*=\s*(\d+)$/)
+          type = $1
+          val = $2.to_i
+          break
+        elsif(!(line =~ /^;/))
+          break
+        end
+      }
+      break if type
+    }
+    abort "Error: Bootloader settings cannot be found" if !type
+    args[type.downcase.intern] = val
+  end
+  if(args[:sectors])
+    room = args[:sectors] * sector_size
+  else
+    room = args[:bytes]
+  end
+  offset = capacity - room
+  puts "Info: Flash offset is 0x%x (Room size is 0x%x bytes)" % [offset, room]
+  elf = mk[:elf].sub(/\.\w+$/, '')
+  base = elf + "_" + flash.downcase
+  cof = "#{base}.cof"
+  puts "Warning: #{cof} will be overwritten" if File.exist?(cof)
+  puts "Info: Generating #{cof}"
+  open(cof, "w") {|f|
+    f.puts(COF_TEMPLATE % [flash, loader_dev, base, elf, offset])
+  }
+  puts "Info: Modifying Makefile"
+  open("Makefile", "w") {|f|
+    f.print(mk[:b].join(''))
+    f.puts(MAKE_TEMPLATE % flash)
+    f.print(mk[:a].join(''))
+  }
+  puts "Info: Complete."
+end
+
+MAKE_TEMPLATE = <<EOD
+#<#{MARKER}>
+#------------------------------------------------------------------------------
+#                         HEX TARGET RULE
+#------------------------------------------------------------------------------
+HEX := $(basename $(ELF)).hex
+HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
+$(HEX) : $(ELF)
+	@$(ECHO) Info: Creating $@
+	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@
+	$(OBJCOPY) -Ibinary -Oihex $@
+hex : $(HEX)
+
+#------------------------------------------------------------------------------
+#                         JIC TARGET RULE
+#------------------------------------------------------------------------------
+FLASH_DEVICE ?= %s#{0;nil}
+QUARTUS_CPF ?= $(QUARTUS_ROOTDIR)/bin/quartus_cpf
+JIC := $(basename $(ELF))_$(FLASH_DEVICE).jic
+COF := $(basename $(ELF))_$(FLASH_DEVICE).cof
+$(JIC) : $(COF) $(HEX)
+	@$(ECHO) Info: Creating $@
+	$(QUARTUS_CPF) -c $<
+jic : $(JIC)
+
+#------------------------------------------------------------------------------
+#                         JTAG PROGRAMMING
+#------------------------------------------------------------------------------
+QUARTUS_PGM ?= $(QUARTUS_ROOTDIR)/bin/quartus_pgm
+prog : $(JIC)
+	@$(ECHO) Info: Programming $<
+	$(QUARTUS_PGM) -m jtag -o ipv\;$<
+#</#{MARKER}>
+EOD
+
+COF_TEMPLATE = <<EOD
+<?xml version="1.0" encoding="US-ASCII" standalone="yes"?>
+<cof>
+	<eprom_name>%s#{0;nil}</eprom_name>
+	<flash_loader_device>%s#{1;nil}</flash_loader_device>
+	<output_filename>%s.jic#{2;nil}</output_filename>
+	<n_pages>0</n_pages>
+	<width>1</width>
+	<mode>7</mode>
+	<hex_block>
+		<hex_filename>%s.hex#{3;nil}</hex_filename>
+		<hex_addressing>relative</hex_addressing>
+		<hex_offset>%d#{4;nil}</hex_offset>
+	</hex_block>
+	<version>5</version>
+	<create_cvp_file>0</create_cvp_file>
+	<options>
+		<map_file>1</map_file>
+	</options>
+</cof>
+EOD
+
+if(__FILE__ == $0)
+  args = {}
+  OptionParser.new {|o|
+    o.on('-f FLASH') {|v| args[:flash] = v }
+    o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
+    o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
+    o.parse!(ARGV)
+  }
+  if(!ARGV.empty? or !args[:flash] or (args[:sectors] and args[:bytes]))
+    abort <<EOD 
+Usage: #$0 -f <flash_device_name> [-s <sectors>|-b <bytes>]
+EOD
+  end
+  ext_makefile(args)
+end
+
+# vim:ft=ruby:
