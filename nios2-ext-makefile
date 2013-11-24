@@ -145,7 +145,7 @@ jic : $(JIC)
 QUARTUS_PGM ?= $(QUARTUS_ROOTDIR)/bin/quartus_pgm
 prog : $(JIC)
 	@$(ECHO) Info: Programming $<
-	$(QUARTUS_PGM) -m jtag -o ipv\;$<
+	$(QUARTUS_PGM) -m jtag -o ipv\\;$<
 #</#{MARKER}>
 EOD
 
