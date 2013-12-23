@@ -2,7 +2,7 @@
 Q ?= @
 
 SOURCES = $(wildcard *.S)
-BOOTROM_WORDS = $(shell nios2-elf-nm $< | sed -ne "s/\([0-9A-F]\{8\}\) a EPCS_BOOTROM_WORDS/0x\1/p")
+BOOTROM_WORDS = $(shell nios2-elf-nm $< | sed -ne "s/\([0-9A-F]\{8\}\) a BOOTROM_WORDS/0x\1/p")
 
 all: $(SOURCES:.S=.hex)
 

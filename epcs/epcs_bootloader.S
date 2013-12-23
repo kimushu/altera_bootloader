@@ -20,6 +20,7 @@
 //# define EPCS_BOOTROM_WORDS	0x080	// Cyclone and Cyclone II
 # define EPCS_BOOTROM_WORDS	0x100	// Other device families
 #endif
+.equ	BOOTROM_WORDS,	EPCS_BOOTROM_WORDS
 
 #if !defined(EPCS_ELF_BYTES) && !defined(EPCS_ELF_SECTORS)
 /*
