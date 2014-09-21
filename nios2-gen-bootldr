@@ -35,6 +35,8 @@ def gen_bootldr(args)
     cmd += " -DEPCS_ELF_SECTORS=#{args[:sectors]}"
   elsif(args[:bytes])
     cmd += " -DEPCS_ELF_BYTES=#{args[:bytes]}"
+  elsif(args[:after_sof])
+    cmd += " -DEPCS_ELF_AFTER_SOF=#{args[:after_sof]}"
   end
   cmd += " #{src}/epcs/epcs_bootloader.S"
   do_cmd.call(cmd)
@@ -45,6 +47,7 @@ def gen_bootldr(args)
     o.puts(";   EPCS_BOOTROM_WORDS = 0x%x" % words)
     o.puts(";   EPCS_ELF_SECTORS   = #{args[:sectors]}") if args[:sectors]
     o.puts(";   EPCS_ELF_BYTES     = #{args[:bytes]}") if args[:bytes]
+    o.puts(";   EPCS_ELF_AFTER_SOF = #{args[:after_sof]}") if args[:after_sof]
   }
   do_cmd.call("ruby #{src}/convert_hex.rb -l -d #{words} < #{out}.tmp >> #{out}.hex")
   do_cmd.call("rm #{out}.tmp")
@@ -58,13 +61,12 @@ if(__FILE__ == $0)
     o.on('-i INST') {|v| args[:instance] = v }
     o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
     o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
+    o.on('-a') { args[:after_sof] = 1 }
     o.parse!(ARGV)
   }
-  if(ARGV.size != 1 or
-      (args[:sectors] and args[:bytes]) or
-      (!args[:sectors] and !args[:bytes]))
+  if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].nitems != 1)
     abort <<EOD 
-Usage: #$0 [-i <epcs_instance_name>] {-s <sectors>|-b <bytes>} <sopcinfo>
+Usage: #{File.basename($0)} [-i <epcs_instance_name>] {-s <sectors>|-b <bytes>|-a} <sopcinfo>
 EOD
   end
   args[:sopcinfo] = ARGV.first

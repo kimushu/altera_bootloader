@@ -22,7 +22,7 @@
 #endif
 .equ	BOOTROM_WORDS,	EPCS_BOOTROM_WORDS
 
-#if !defined(EPCS_ELF_BYTES) && !defined(EPCS_ELF_SECTORS)
+#if !defined(EPCS_ELF_BYTES) && !defined(EPCS_ELF_SECTORS) && !defined(EPCS_ELF_AFTER_SOF)
 /*
  * Length of ELF area (in bytes)
  * (Comment out if you use EPCS_ELF_SECTORS)
@@ -35,6 +35,12 @@
  * (Sector size is automatically detected)
  */
 # define EPCS_ELF_SECTORS	1
+
+/*
+ * After SOF mode
+ * (Automatically detects the length of configuration data)
+ */
+//# define EPCS_ELF_AFTER_SOF	1
 #endif
 
 /*
@@ -47,6 +53,7 @@
 #define r_write_data	r7
 #define r_elf_base		r8
 #define r_e_entry		r9
+#define r_opt_count		r9
 #define r_e_phoff		r10
 #define r_e_phentsize	r11
 #define r_e_phnum		r12
@@ -77,16 +84,11 @@
 /*
  * Parameter check
  */
-#ifdef EPCS_ELF_BYTES
-# ifdef EPCS_ELF_SECTORS
-	.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
+#if (defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_SECTORS)) || \
+    (defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_AFTER_SOF)) || \
+    (defined(EPCS_ELF_SECTORS) && defined(EPCS_ELF_AFTER_SOF))
+	.print "**** One of EPCS_ELF_BYTES, EPCS_ELF_SECTORS or EPCS_ELF_AFTER_SOF must be defined ****"
 	.err
-# endif
-#else
-# ifndef EPCS_ELF_SECTORS
-	.print "**** Either EPCS_ELF_BYTES or EPCS_ELF_SECTORS must be defined ****"
-	.err
-# endif
 #endif
 
 /*********************************************************************************
@@ -155,6 +157,7 @@ reset:
 	ori		r_epcs_base, r_epcs_base, (EPCS_BOOTROM_WORDS * 4) - 1
 	addi	r_epcs_base, r_epcs_base, 1
 
+#ifndef EPCS_ELF_AFTER_SOF
 	// Get EPCS Silicon ID
 	movhi	r_write_data, %hi(EPCS_READ_SILICON_ID << 24)
 	RCALL	epcs_txrx_word
@@ -168,7 +171,7 @@ reset:
 #ifdef EPCS_ELF_BYTES
 	// Calculate ELF base address (EndOfEPCS - EPCS_ELF_BYTES)
 	addi	r_elf_base, r_elf_base, -EPCS_ELF_BYTES
-#endif
+#endif	/* EPCS_ELF_BYTES */
 #ifdef EPCS_ELF_SECTORS
 	// Calculate ELF base address (EndOfEPCS - SectorSize*EPCS_ELF_SECTORS)
 	addi	r_read_data, r_read_data, 7
@@ -178,7 +181,7 @@ reset:
 	MOVI32	r_temp, EPCS_ELF_SECTORS
 	sll		r_temp, r_temp, r_read_data
 	sub		r_elf_base, r_elf_base, r_temp
-#endif
+#endif	/* EPCS_ELF_SECTORS */
 
 	// Check ELF header
 	orhi	r_elf_base, r_elf_base, %hi(EPCS_READ_BYTES << 24)
@@ -188,6 +191,63 @@ reset:
 	EPCS_CLOSE
 	MOVI32	r_temp, ELF_HEADER_LE
 	bne		r_read_data, r_temp, halt
+#else	/* EPCS_ELF_AFTER_SOF */
+	// Get configuration data length (only bit[27..0])
+	MOVI32	r_write_data, ((EPCS_READ_BYTES << 24) + 33)
+	RCALL	epcs_txrx_word
+	RCALL	epcs_txrx_word
+	slli	r_read_data, r_read_data, 1
+	RCALL	extract_bit5s
+	slli	r_elf_base, r_temp, 29	// set27_25
+	EPCS_CLOSE
+	MOVI32	r_write_data, ((EPCS_READ_BYTES << 24) + 48)
+	RCALL	epcs_txrx_word
+	MOVI32	r_opt_count, 6
+1:	RCALL	epcs_txrx_word
+	RCALL	extract_bit5s
+	roli	r_elf_base, r_elf_base, (32-4)
+	or		r_elf_base, r_elf_base, r_temp	// loop[r_opt_count]
+	subi	r_opt_count, r_opt_count, 1
+	bne		r_opt_count, r_zero, 1b
+	RCALL	epcs_txrx_word
+	EPCS_CLOSE
+	srli	r_temp, r_read_data, 1
+	andi	r_temp, r_temp, 0x0010
+	ori		r_elf_base, r_elf_base, r_temp	// set24
+	roli	r_elf_base, r_elf_base, (32-12)	// rotate
+
+//	7650_0000_0000_0000_0000_0000_0000_0000 set27_25
+//	0000_7650_0000_0000_0000_0000_0000_3210 loop[6]
+//	3210_0000_7650_0000_0000_0000_0000_7654 loop[5]
+//	7654_3210_0000_7650_0000_0000_0000_1098 loop[4]
+//	1098_7654_3210_0000_7650_0000_0000_5432 loop[3]
+//	5432_1098_7654_3210_0000_7650_0000_9876 loop[2]
+//	9876_5432_1098_7654_3210_0000_7650_3210 loop[1]
+//	9876_5432_1098_7654_3210_0000_7654_3210 set24
+//	0000_7654_3210_9876_5432_1098_7654_3210 rotate
+
+	// Convert bits to bytes
+	addi	r_elf_base, r_elf_base, 7
+	srli	r_elf_base, r_elf_base, 3
+
+	// Check ELF header
+	// If no ELF header found at r_elf_base, retry at r_elf_base+1
+	// (This is workaround for difference for compression data)
+	orhi	r_elf_base, r_elf_base, %hi(EPCS_READ_BYTES << 24)
+	mov		r_write_data, r_elf_base
+	RCALL	epcs_txrx_word
+	RCALL	epcs_txrx_word
+	EPCS_CLOSE
+	MOVI32	r_temp, ELF_HEADER_LE
+	beq		r_read_data, r_temp, 1f
+	addi	r_elf_base, r_elf_base, 1
+	mov		r_write_data, r_elf_base
+	RCALL	epcs_txrx_word
+	RCALL	epcs_txrx_word
+	EPCS_CLOSE
+	bne		r_read_data, r_temp, halt
+1:
+#endif	/* EPCS_ELF_AFTER_SOF */
 
 	// Check ELF type & machine
 	addi	r_write_data, r_elf_base, 16	// offsetof(elf32_ehdr, e_type)
@@ -282,4 +342,29 @@ epcs_txrx_word:
 	addi	r_byte_count, r_byte_count, -1
 	bne		r_byte_count, r_zero, 1b
 	RRET
+
+#ifdef EPCS_ELF_AFTER_SOF
+/*
+ * extract_bit5s - Extract bit5 of each byte (Must be called by RCALL)
+ *   Input:  r_read_data (0b**A*****_**B*****_**C*****_**D*****)
+ *   Output: r_temp      (0b00000000_00000000_00000000_0000ABCD)
+ */
+extract_bit5s:
+# xxAxxxxxxxBxxxxxxxCxxxxxxxDxxxxx (r_read_data)
+	ori		r_read_data, r_read_data, 0xdfdf
+	orhi	r_read_data, r_read_data, 0xdfdf
+# 11A1111111B1111111C1111111D11111 (r_read_data)
+	srli	r_temp, r_read_data, 7
+# 000011111A1111111B1111111C111111 (r_temp)
+	and		r_temp, r_temp, r_read_data
+# 000011111AB111111BC111111CD11111 (r_temp)
+	srli	r_read_data, r_temp, 14
+# 00000000000000000011111AB1111111 (r_read_data)
+	and		r_temp, r_temp, r_read_data
+# 000000000000000000C1111ABCD11111 (r_temp)
+	srli	r_temp, r_temp, 5
+	andi	r_temp, r_temp, 0xf
+# 0000000000000000000000000000ABCD (r_temp)
+	RRET
+#endif
 

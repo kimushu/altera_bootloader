@@ -71,13 +71,13 @@ def ext_makefile(args)
   else
     abort "Error: This device is not supported"
   end
-  if(!args[:sectors] and !args[:bytes])
+  if(!args[:sectors] and !args[:bytes] and !args[:after_sof])
     puts "Info: Investigating bootloader settings"
     type, val = nil
     Dir.glob(mk[:sopcinfo].sub(/\/\w+\.\w+$/, '/*_boot_rom.hex')) {|f|
       puts "Info: Investigating #{f}"
       open(f).each_line {|line|
-        if(line =~ /^;\s*EPCS_ELF_(SECTORS|BYTES)\s*=\s*(\d+)$/)
+        if(line =~ /^;\s*EPCS_ELF_(SECTORS|BYTES|AFTER_SOF)\s*=\s*(\d+)$/)
           type = $1
           val = $2.to_i
           break
@@ -90,32 +90,68 @@ def ext_makefile(args)
     abort "Error: Bootloader settings cannot be found" if !type
     args[type.downcase.intern] = val
   end
-  if(args[:sectors])
-    room = args[:sectors] * sector_size
+  if(args[:after_sof])
+    abort "Error: SOF file path required (-a option)" if !args[:sof]
+    room = nil
+    offset = 0
+    puts "Info: Flash offset is auto (for after_sof mode)"
   else
-    room = args[:bytes]
+    if(args[:sectors])
+      room = args[:sectors] * sector_size
+    elsif(args[:bytes])
+      room = args[:bytes]
+    end
+    offset = capacity - room
+    puts "Info: Flash offset is 0x%x (Room size is 0x%x bytes)" % [offset, room]
   end
-  offset = capacity - room
-  puts "Info: Flash offset is 0x%x (Room size is 0x%x bytes)" % [offset, room]
-  elf = mk[:elf].sub(/\.\w+$/, '')
-  base = elf + "_" + flash.downcase
+  elf = File.basename(mk[:elf], ".*")
+  if(args[:sof])
+    base = elf + "_" + File.basename(args[:sof], ".*") + "_" + flash.downcase
+  else
+    base = elf + "_" + flash.downcase
+  end
   cof = "#{base}.cof"
   puts "Warning: #{cof} will be overwritten" if File.exist?(cof)
   puts "Info: Generating #{cof}"
   open(cof, "w") {|f|
-    f.puts(COF_TEMPLATE % [flash, loader_dev, base, elf, offset])
+    rpd = 0
+    rpd = 1 if args[:rpd]
+    if(args[:sof])
+      puts "Info: Joined SOF is '#{args[:sof]}'"
+      f.puts(COF_TEMPLATE_SOF % [flash, loader_dev, base, elf, offset, args[:sof], rpd])
+    else
+      f.puts(COF_TEMPLATE % [flash, loader_dev, base, elf, offset, rpd])
+    end
   }
   puts "Info: Modifying Makefile"
-  open("Makefile", "w") {|f|
+  open("Makefile.tmp", "w") {|f|
     f.print(mk[:b].join(''))
-    f.puts(MAKE_TEMPLATE % flash.downcase)
+    f.puts("#<#{MARKER}>")
+    if(args[:sof])
+      f.puts(MAKE_TEMPLATE_SOF % args[:sof])
+    end
+    f.puts(MAKE_TEMPLATE_COMMON % flash.downcase)
+    if(args[:rpd])
+      puts "Info: Auto RPD generation enabled"
+      f.puts(MAKE_TEMPLATE_RPD)
+    end
+    f.puts("#</#{MARKER}>")
     f.print(mk[:a].join(''))
   }
+  File.rename("Makefile.tmp", "Makefile")
   puts "Info: Complete."
 end
 
-MAKE_TEMPLATE = <<EOD
-#<#{MARKER}>
+MAKE_TEMPLATE_SOF = <<EOD
+#------------------------------------------------------------------------------
+#                         SOF CONFIGURATION
+#------------------------------------------------------------------------------
+SOF := %s#{0;nil}
+SOF_BASE := $(notdir $(basename $(SOF)))
+
+EOD
+
+MAKE_TEMPLATE_COMMON = <<EOD
 #------------------------------------------------------------------------------
 #                         HEX TARGET RULE
 #------------------------------------------------------------------------------
@@ -123,8 +159,9 @@ HEX := $(basename $(ELF)).hex
 HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
 $(HEX) : $(ELF)
 	@$(ECHO) Info: Creating $@
-	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@
-	$(OBJCOPY) -Ibinary -Oihex $@
+	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@ || (rm -f $@; false)
+	$(OBJCOPY) -Ibinary -Oihex $@ || (rm -f $@; false)
+.PHONY : hex
 hex : $(HEX)
 
 #------------------------------------------------------------------------------
@@ -132,21 +169,34 @@ hex : $(HEX)
 #------------------------------------------------------------------------------
 FLASH_DEVICE ?= %s#{0;nil}
 QUARTUS_CPF ?= $(QUARTUS_ROOTDIR)/bin/quartus_cpf
-JIC := $(basename $(ELF))_$(FLASH_DEVICE).jic
-COF := $(basename $(ELF))_$(FLASH_DEVICE).cof
+COF := $(basename $(ELF))$(addprefix _,$(SOF_BASE))_$(FLASH_DEVICE).cof
+JIC := $(COF:.cof=.jic)
 $(JIC) : $(COF) $(HEX)
 	@$(ECHO) Info: Creating $@
 	$(QUARTUS_CPF) -c $<
+.PHONY : jic
 jic : $(JIC)
 
 #------------------------------------------------------------------------------
 #                         JTAG PROGRAMMING
 #------------------------------------------------------------------------------
 QUARTUS_PGM ?= $(QUARTUS_ROOTDIR)/bin/quartus_pgm
+.PHONY : prog
 prog : $(JIC)
 	@$(ECHO) Info: Programming $<
 	$(QUARTUS_PGM) -m jtag -o ipv\\;$<
-#</#{MARKER}>
+
+EOD
+
+MAKE_TEMPLATE_RPD = <<EOD
+#------------------------------------------------------------------------------
+#                         RPD TARGET RULE
+#------------------------------------------------------------------------------
+RPD := $(JIC:.jic=_auto.rpd)
+$(RPD) : $(JIC)
+.PHONY : rpd
+rpd : $(RPD)
+
 EOD
 
 COF_TEMPLATE = <<EOD
@@ -165,6 +215,38 @@ COF_TEMPLATE = <<EOD
 	</hex_block>
 	<version>5</version>
 	<create_cvp_file>0</create_cvp_file>
+	<auto_create_rpd>%d#{5;nil}</auto_create_rpd>
+	<options>
+		<map_file>1</map_file>
+	</options>
+</cof>
+EOD
+
+COF_TEMPLATE_SOF = <<EOD
+<?xml version="1.0" encoding="US-ASCII" standalone="yes"?>
+<cof>
+	<eprom_name>%s#{0;nil}</eprom_name>
+	<flash_loader_device>%s#{1;nil}</flash_loader_device>
+	<output_filename>%s.jic#{2;nil}</output_filename>
+	<n_pages>1</n_pages>
+	<width>1</width>
+	<mode>7</mode>
+	<hex_block>
+		<hex_filename>%s.hex#{3;nil}</hex_filename>
+		<hex_addressing>relative</hex_addressing>
+		<hex_offset>%d#{4;nil}</hex_offset>
+	</hex_block>
+	<sof_data>
+		<start_address>00000000</start_address>
+		<user_name>Page_0</user_name>
+		<page_flags>1</page_flags>
+		<bit0>
+			<sof_filename>%s#{5;nil}<compress_bitstream>1</compress_bitstream></sof_filename>
+		</bit0>
+	</sof_data>
+	<version>5</version>
+	<create_cvp_file>0</create_cvp_file>
+	<auto_create_rpd>%d#{6;nil}</auto_create_rpd>
 	<options>
 		<map_file>1</map_file>
 	</options>
@@ -177,11 +259,14 @@ if(__FILE__ == $0)
     o.on('-f FLASH') {|v| args[:flash] = v }
     o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
     o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
+    o.on('-a') { args[:after_sof] = 1 }
+    o.on('-c SOF') {|v| args[:sof] = v }
+    o.on('-r') { args[:rpd] = true }
     o.parse!(ARGV)
   }
-  if(!ARGV.empty? or !args[:flash] or (args[:sectors] and args[:bytes]))
+  if(!ARGV.empty? or !args[:flash] or [args[:sectors], args[:bytes], args[:after_sof]].nitems > 1)
     abort <<EOD 
-Usage: #$0 -f <flash_device_name> [-s <sectors>|-b <bytes>]
+Usage: #{File.basename($0)} -f <flash_device_name> [-s <sectors>|-b <bytes>|-a] [-c <sof_path>] [-r]
 EOD
   end
   ext_makefile(args)
