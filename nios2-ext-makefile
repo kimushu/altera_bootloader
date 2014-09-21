@@ -91,7 +91,7 @@ def ext_makefile(args)
     args[type.downcase.intern] = val
   end
   if(args[:after_sof])
-    abort "Error: SOF file path required (-a option)" if !args[:sof]
+    abort "Error: SOF file path required (-c option)" if !args[:sof]
     room = nil
     offset = 0
     puts "Info: Flash offset is auto (for after_sof mode)"
