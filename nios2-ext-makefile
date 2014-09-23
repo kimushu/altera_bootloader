@@ -141,6 +141,7 @@ def ext_makefile(args)
       puts "Info: Auto RPD generation enabled"
       f.puts(MAKE_TEMPLATE_RPD)
     end
+    f.puts(MAKE_TEMPLATE_CLEAN)
     f.puts("#</#{MARKER}>")
     f.print(mk[:a].join(''))
   }
@@ -150,7 +151,7 @@ end
 
 MAKE_TEMPLATE_SOF = <<EOD
 #------------------------------------------------------------------------------
-#                         SOF CONFIGURATION
+#                              SOF CONFIGURATION
 #------------------------------------------------------------------------------
 SOF := %s#{0;nil}
 SOF_BASE := $(notdir $(basename $(SOF)))
@@ -159,7 +160,7 @@ EOD
 
 MAKE_TEMPLATE_COMMON = <<EOD
 #------------------------------------------------------------------------------
-#                         HEX TARGET RULE
+#                               HEX TARGET RULE
 #------------------------------------------------------------------------------
 HEX := $(basename $(ELF)).hex
 HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
@@ -173,7 +174,7 @@ HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
 hex : $(HEX)
 
 #------------------------------------------------------------------------------
-#                         JIC TARGET RULE
+#                               JIC TARGET RULE
 #------------------------------------------------------------------------------
 FLASH_DEVICE ?= %s#{1;nil}
 QUARTUS_CPF ?= $(QUARTUS_ROOTDIR)/bin/quartus_cpf
@@ -186,7 +187,7 @@ $(JIC) : $(COF) $(HEX)
 jic : $(JIC)
 
 #------------------------------------------------------------------------------
-#                         JTAG PROGRAMMING
+#                               JTAG PROGRAMMING
 #------------------------------------------------------------------------------
 QUARTUS_PGM ?= $(QUARTUS_ROOTDIR)/bin/quartus_pgm
 .PHONY : prog
@@ -198,12 +199,24 @@ EOD
 
 MAKE_TEMPLATE_RPD = <<EOD
 #------------------------------------------------------------------------------
-#                         RPD TARGET RULE
+#                               RPD TARGET RULE
 #------------------------------------------------------------------------------
 RPD := $(JIC:.jic=_auto.rpd)
 $(RPD) : $(JIC)
-.PHONY : rpd
+.PHONY : rpd clean_rpd
 rpd : $(RPD)
+
+EOD
+
+MAKE_TEMPLATE_CLEAN = <<EOD
+#------------------------------------------------------------------------------
+#                       CLEAN RULE FOR PROGRAMMING FILES
+#------------------------------------------------------------------------------
+clean : clean_programming_files
+.PHONY : clean_programming_files
+clean_programming_files :
+	@$(ECHO) Info: Cleaning programming files
+	@$(RM) -f $(HEX) $(JIC) $(RPD)
 
 EOD
 
@@ -225,7 +238,7 @@ COF_TEMPLATE = <<EOD
 	<create_cvp_file>0</create_cvp_file>
 	<auto_create_rpd>%d#{5;nil}</auto_create_rpd>
 	<options>
-		<map_file>1</map_file>
+		<map_file>0</map_file>
 	</options>
 </cof>
 EOD
@@ -256,7 +269,7 @@ COF_TEMPLATE_SOF = <<EOD
 	<create_cvp_file>0</create_cvp_file>
 	<auto_create_rpd>%d#{6;nil}</auto_create_rpd>
 	<options>
-		<map_file>1</map_file>
+		<map_file>0</map_file>
 	</options>
 </cof>
 EOD
