@@ -91,7 +91,7 @@ def ext_makefile(args)
     args[type.downcase.intern] = val
   end
   if(args[:after_sof])
-    abort "Error: SOF file path required (-c option)" if !args[:sof]
+    abort "Error: SOF file path required (-O option)" if !args[:sof]
     room = nil
     offset = 0
     puts "Info: Flash offset is auto (for after_sof mode)"
@@ -130,7 +130,13 @@ def ext_makefile(args)
     if(args[:sof])
       f.puts(MAKE_TEMPLATE_SOF % args[:sof])
     end
-    f.puts(MAKE_TEMPLATE_COMMON % flash.downcase)
+    if(args[:compress])
+      puts "Info: ELF will be compressed (Method: #{args[:compress].size == 0 ? "default" : args[:compress]})"
+      compress = "ELFCOMPRESS = elfcompress\nELFCOMPRESS_METHOD = #{args[:compress]}\n"
+    else
+      compress = "ELFCOMPRESS = @true"
+    end
+    f.puts(MAKE_TEMPLATE_COMMON % [compress, flash.downcase])
     if(args[:rpd])
       puts "Info: Auto RPD generation enabled"
       f.puts(MAKE_TEMPLATE_RPD)
@@ -157,17 +163,19 @@ MAKE_TEMPLATE_COMMON = <<EOD
 #------------------------------------------------------------------------------
 HEX := $(basename $(ELF)).hex
 HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
-$(HEX) : $(ELF)
+%s#{0;nil}$(HEX) : $(ELF)
 	@$(ECHO) Info: Creating $@
 	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@ || (rm -f $@; false)
+	$(ELFCOMPRESS) $(addprefix -m,$(ELFCOMPRESS_METHOD)) $@ || (rm -f $@; false)
 	$(OBJCOPY) -Ibinary -Oihex $@ || (rm -f $@; false)
+	chmod -x $@
 .PHONY : hex
 hex : $(HEX)
 
 #------------------------------------------------------------------------------
 #                         JIC TARGET RULE
 #------------------------------------------------------------------------------
-FLASH_DEVICE ?= %s#{0;nil}
+FLASH_DEVICE ?= %s#{1;nil}
 QUARTUS_CPF ?= $(QUARTUS_ROOTDIR)/bin/quartus_cpf
 COF := $(basename $(ELF))$(addprefix _,$(SOF_BASE))_$(FLASH_DEVICE).cof
 JIC := $(COF:.cof=.jic)
@@ -256,19 +264,23 @@ EOD
 if(__FILE__ == $0)
   args = {}
   OptionParser.new {|o|
-    o.on('-f FLASH') {|v| args[:flash] = v }
-    o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
-    o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
-    o.on('-a') { args[:after_sof] = 1 }
-    o.on('-c SOF') {|v| args[:sof] = v }
-    o.on('-r') { args[:rpd] = true }
+    o.summary_width = 16
+    o.separator("\nRequired options:")
+    o.on('-f FLASH', 'Flash device name (ex: EPCS4, EPCS16 etc.)') {|v| args[:flash] = v }
+    o.separator("\nAlternative options for ELF placement:")
+    o.on('-s SECTORS', 'Number of sectors to place ELF image') {|v| args[:sectors] = v.to_i }
+    o.on('-b BYTES', 'Number of bytes to place ELF image') {|v| args[:bytes] = v.to_i }
+    o.on('-a', 'Place ELF just after SOF') { args[:after_sof] = 1 }
+    o.separator("\nOptional options:")
+    o.on('-O SOF', 'Combine with specified SOF') {|v| args[:sof] = v }
+    o.on('-c [METHOD]', 'Compress ELF image') {|v| args[:compress] = v || "" }
+    o.on('-r', 'Generate RPD file') { args[:rpd] = true }
     o.parse!(ARGV)
+    if(!ARGV.empty? or !args[:flash] or [args[:sectors], args[:bytes], args[:after_sof]].nitems > 1)
+      puts o.help
+      abort
+    end
   }
-  if(!ARGV.empty? or !args[:flash] or [args[:sectors], args[:bytes], args[:after_sof]].nitems > 1)
-    abort <<EOD 
-Usage: #{File.basename($0)} -f <flash_device_name> [-s <sectors>|-b <bytes>|-a] [-c <sof_path>] [-r]
-EOD
-  end
   ext_makefile(args)
 end
 

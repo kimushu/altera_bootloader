@@ -29,7 +29,7 @@ def gen_bootldr(args)
     print `#{cmd}`
     abort "Error: Command failed (status=#{$?.exitstatus})" if $?.exitstatus != 0
   }
-  cmd = "nios2-elf-gcc -c -nostartfiles -o #{out}.tmp"
+  cmd = "nios2-elf-gcc -nostartfiles -o #{out}.tmp"
   cmd += " -DEPCS_BOOTROM_WORDS=#{words}"
   if(args[:sectors])
     cmd += " -DEPCS_ELF_SECTORS=#{args[:sectors]}"
@@ -38,9 +38,10 @@ def gen_bootldr(args)
   elsif(args[:after_sof])
     cmd += " -DEPCS_ELF_AFTER_SOF=#{args[:after_sof]}"
   end
+  cmd += " -DEPCS_COMPRESS_LZ4=1"
   cmd += " #{src}/epcs/epcs_bootloader.S"
   do_cmd.call(cmd)
-  do_cmd.call("nios2-elf-objcopy -O ihex #{out}.tmp")
+  do_cmd.call("nios2-elf-objcopy --change-section-lma .text=0 #{out}.tmp")
   open("#{out}.hex", "w") {|o|
     o.puts("; This file is created by #{File.basename(__FILE__)}")
     o.puts("; Configuration:")
@@ -48,8 +49,10 @@ def gen_bootldr(args)
     o.puts(";   EPCS_ELF_SECTORS   = #{args[:sectors]}") if args[:sectors]
     o.puts(";   EPCS_ELF_BYTES     = #{args[:bytes]}") if args[:bytes]
     o.puts(";   EPCS_ELF_AFTER_SOF = #{args[:after_sof]}") if args[:after_sof]
+    o.puts(";   EPCS_COMPRESS_LZ4  = 1")
   }
-  do_cmd.call("ruby #{src}/convert_hex.rb -l -d #{words} < #{out}.tmp >> #{out}.hex")
+  do_cmd.call("elf2hex --width=32 --input=#{out}.tmp --output=#{out}.tmp --base=0 --end=#{words*4-1}")
+  do_cmd.call("cat #{out}.tmp >> #{out}.hex")
   do_cmd.call("rm #{out}.tmp")
   puts "Info: Completed."
   puts "Info: Bootloader is located at '#{out}.hex'"
@@ -58,17 +61,20 @@ end
 if(__FILE__ == $0)
   args = {}
   OptionParser.new {|o|
-    o.on('-i INST') {|v| args[:instance] = v }
-    o.on('-s SECTORS') {|v| args[:sectors] = v.to_i }
-    o.on('-b BYTES') {|v| args[:bytes] = v.to_i }
-    o.on('-a') { args[:after_sof] = 1 }
+    o.banner += " <sopcinfo>"
+    o.summary_width = 16
+    o.separator("\nAlternative options for ELF placement:")
+    o.on('-s SECTORS', 'Number of sectors to place ELF image') {|v| args[:sectors] = v.to_i }
+    o.on('-b BYTES', 'Number of bytes to place ELF image') {|v| args[:bytes] = v.to_i }
+    o.on('-a', 'Place ELF just after SOF') { args[:after_sof] = 1 }
+    o.separator("\nOptional options:")
+    o.on('-i INST', 'Instance name of EPCS controller') {|v| args[:instance] = v }
     o.parse!(ARGV)
+    if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].nitems != 1)
+      puts o.help
+      abort
+    end
   }
-  if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].nitems != 1)
-    abort <<EOD 
-Usage: #{File.basename($0)} [-i <epcs_instance_name>] {-s <sectors>|-b <bytes>|-a} <sopcinfo>
-EOD
-  end
   args[:sopcinfo] = ARGV.first
   gen_bootldr(args)
 end

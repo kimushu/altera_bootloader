@@ -14,6 +14,11 @@
  */
 
 /*
+ * Do not use r1 for optimization
+ */
+.set noat
+
+/*
  * Length of EPCS Controller's Boot ROM Memory (in words)
  */
 #ifndef EPCS_BOOTROM_WORDS
@@ -47,26 +52,34 @@
  * Register usage
  */
 #define r_zero			r0
-#define r_temp			r4
-#define r_byte_count	r5
-#define r_read_data		r6
-#define r_write_data	r7
-#define r_elf_base		r8
-#define r_e_entry		r9
-#define r_opt_count		r9
-#define r_e_phoff		r10
-#define r_e_phentsize	r11
-#define r_e_phnum		r12
-#define r_p_offset		r13
-#define r_p_paddr		r14
-#define r_p_filesz		r15
-#define r_epcs_base		r16
-#define r_p_memsz		r17
+#define r_temp			r1	/* Temporary */
+#define r_return		r2	/* Used in RCALL, RRET */
+#define r_epcs_base		r3	/* Base of EPCS controller */
+#define r_elf_base		r4	/* Base of ELF data */
+#define r_opt_count		r5	/* SOF option bit count */
+#define r_e_entry		r5	/* (e_entry) */
+#define r_e_phoff		r6	/* (e_phoff) */
+#define r_e_phentsize	r7	/* (e_phentsize) */
+#define r_e_phnum		r8	/* (e_phnum) */
+#define r_p_paddr		r9	/* (p_paddr) */
+#define r_paddr_fend	r10	/* (p_paddr + p_filesz) */
+#define r_paddr_mend	r11	/* (p_paddr + p_memsz) */
+#define r_epcs_count	r12	/* Used in epcs_txrx_word */
+#define r_epcs_read		r13	/* Used in epcs_txrx_word */
+#define r_epcs_write	r14	/* Used in epcs_txrx_word */
+#define r_p_type		r15	/* (p_type) */
+/*
+ * r15-r31 : Free area for decompressor
+ * (If decompressor does not use epcs_txrx_word, r12-r14 are also free)
+ */
 
 #define ELF_HEADER_LE		0x464c457f
 #define ET_EXEC				2
 #define EM_NIOS2			0x71
 #define PT_LOAD				1
+#define PT_LOPROC			0x70000000
+#define PT_LOAD_LZSS		(PT_LOPROC|0x10000)
+#define PT_LOAD_LZ4			(PT_LOPROC|0x20000)
 
 /*
  * EPCS Serial Flash Controller Registers
@@ -82,11 +95,21 @@
 #define EPCS_READ_DEVICE_ID		0x9f
 
 /*
+ * LZSS compression parameters
+ */
+#define LZSS_REF_BITS	12
+#define LZSS_REF_OFFSET	1
+#define LZSS_LEN_BITS	4
+#define LZSS_LEN_MIN	4
+#define LZSS_ESC_CHAR	0xffff
+#define LZSS_ESC_END	0xfffe
+
+/*
  * Parameter check
  */
 #if (defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_SECTORS)) || \
-    (defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_AFTER_SOF)) || \
-    (defined(EPCS_ELF_SECTORS) && defined(EPCS_ELF_AFTER_SOF))
+	(defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_AFTER_SOF)) || \
+	(defined(EPCS_ELF_SECTORS) && defined(EPCS_ELF_AFTER_SOF))
 	.print "**** One of EPCS_ELF_BYTES, EPCS_ELF_SECTORS or EPCS_ELF_AFTER_SOF must be defined ****"
 	.err
 #endif
@@ -97,7 +120,7 @@
 
 /*
  * Pseudo move instruction with 32-bit immediate
- *   Operation: rA <- IMM32
+ *   Operation: rA <= IMM32
  *   Syntax:    MOVI32 rA, IMM32
  */
 .macro MOVI32 rA,IMM32
@@ -112,11 +135,29 @@
 .endm
 
 /*
+ * Pseudo and instruction with 32-bit immediate
+ *   Operation: rB <= rA & IMM32
+ *   Syntax:    ANDI32 rB, rA, IMM32
+ */
+.macro ANDI32 rB,rA,IMM32
+	.if (\IMM32 & 0xffff0000)
+		.if (\IMM32 & 0x0000ffff)
+			MOVI32	\rB, \IMM32
+			and		\rB, \rB, \rA
+		.else
+			andhi	\rB, \rA, %hi(\IMM32)
+		.endif
+	.else
+		andi	\rB, \rA, %lo(\IMM32)
+	.endif
+.endm
+
+/*
  * Relative call
  *   Syntax: RCALL label
  */
 .macro RCALL label
-	nextpc	ra
+	nextpc	r_return
 	br		\label
 .endm
 
@@ -125,8 +166,27 @@
  *   Syntax: RRET
  */
 .macro RRET
-	addi	ra, ra, 4
-	jmp		ra
+	addi	r_return, r_return, 4
+	jmp		r_return
+.endm
+
+/*
+ * Open EPCS connection (Start CS# output)
+ */
+.macro EPCS_OPEN
+	MOVI32	r_temp, EPCS_CONTROL_SSO
+	stwio	r_temp, EPCS_CONTROL(r_epcs_base)
+.endm
+
+/*
+ * Send and receive one byte
+ */
+.macro EPCS_TXRX rTX,rRX
+	stwio	\rTX, EPCS_TXDATA(r_epcs_base)
+99:	ldwio	r_temp, EPCS_STATUS(r_epcs_base)
+	andi	r_temp, r_temp, EPCS_STATUS_RRDY
+	beq		r_temp, r_zero, 99b
+	ldbuio	\rRX, EPCS_RXDATA(r_epcs_base)
 .endm
 
 /*
@@ -141,7 +201,8 @@
  *********************************************************************************/
 
 	.text
-reset:
+	.global _start
+_start:
 	// Clear processor status (Disable interrupts)
 	wrctl	status, r_zero
 
@@ -159,14 +220,14 @@ reset:
 
 #ifndef EPCS_ELF_AFTER_SOF
 	// Get EPCS Silicon ID
-	movhi	r_write_data, %hi(EPCS_READ_SILICON_ID << 24)
+	movhi	r_epcs_write, %hi(EPCS_READ_SILICON_ID << 24)
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
 
 	// Calculate EPCS capacity
 	movui	r_elf_base, (1 << 1)
-	sll		r_elf_base, r_elf_base, r_read_data
+	sll		r_elf_base, r_elf_base, r_epcs_read
 
 #ifdef EPCS_ELF_BYTES
 	// Calculate ELF base address (EndOfEPCS - EPCS_ELF_BYTES)
@@ -174,140 +235,146 @@ reset:
 #endif	/* EPCS_ELF_BYTES */
 #ifdef EPCS_ELF_SECTORS
 	// Calculate ELF base address (EndOfEPCS - SectorSize*EPCS_ELF_SECTORS)
-	addi	r_read_data, r_read_data, 7
-	andi	r_read_data, r_read_data, 8
-	srli	r_read_data, r_read_data, 3
-	addi	r_read_data, r_read_data, 15
+	addi	r_epcs_read, r_epcs_read, 7
+	andi	r_epcs_read, r_epcs_read, 8
+	srli	r_epcs_read, r_epcs_read, 3
+	addi	r_epcs_read, r_epcs_read, 15
 	MOVI32	r_temp, EPCS_ELF_SECTORS
-	sll		r_temp, r_temp, r_read_data
+	sll		r_temp, r_temp, r_epcs_read
 	sub		r_elf_base, r_elf_base, r_temp
 #endif	/* EPCS_ELF_SECTORS */
 
-	// Check ELF header
+	// Check ELF header (e_ident)
 	orhi	r_elf_base, r_elf_base, %hi(EPCS_READ_BYTES << 24)
-	mov		r_write_data, r_elf_base
+	mov		r_epcs_write, r_elf_base
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
 	MOVI32	r_temp, ELF_HEADER_LE
-	bne		r_read_data, r_temp, halt
+	bne		r_epcs_read, r_temp, halt
+
 #else	/* EPCS_ELF_AFTER_SOF */
+
 	// Get configuration data length (only bit[27..0])
-	MOVI32	r_write_data, ((EPCS_READ_BYTES << 24) + 33)
+	// r_elf_base <= 0b7650_0000_0000_0000_0000_0000_0000_0000 set27_25
+	// r_elf_base <= 0b0000_7650_0000_0000_0000_0000_0000_3210 loop[6]
+	// r_elf_base <= 0b3210_0000_7650_0000_0000_0000_0000_7654 loop[5]
+	// r_elf_base <= 0b7654_3210_0000_7650_0000_0000_0000_1098 loop[4]
+	// r_elf_base <= 0b1098_7654_3210_0000_7650_0000_0000_5432 loop[3]
+	// r_elf_base <= 0b5432_1098_7654_3210_0000_7650_0000_9876 loop[2]
+	// r_elf_base <= 0b9876_5432_1098_7654_3210_0000_7650_3210 loop[1]
+	// r_elf_base <= 0b9876_5432_1098_7654_3210_0000_7654_3210 set24
+	// r_elf_base <= 0b0000_7654_3210_9876_5432_1098_7654_3210 rotate
+	MOVI32	r_epcs_write, ((EPCS_READ_BYTES << 24) + 33)
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
-	slli	r_read_data, r_read_data, 1
+	slli	r_epcs_read, r_epcs_read, 1
 	RCALL	extract_bit5s
-	slli	r_elf_base, r_temp, 29	// set27_25
+	slli	r_elf_base, r_epcs_read, 29	// set27_25
 	EPCS_CLOSE
-	MOVI32	r_write_data, ((EPCS_READ_BYTES << 24) + 48)
+	MOVI32	r_epcs_write, ((EPCS_READ_BYTES << 24) + 48)
 	RCALL	epcs_txrx_word
 	MOVI32	r_opt_count, 6
 1:	RCALL	epcs_txrx_word
 	RCALL	extract_bit5s
 	roli	r_elf_base, r_elf_base, (32-4)
-	or		r_elf_base, r_elf_base, r_temp	// loop[r_opt_count]
+	or		r_elf_base, r_elf_base, r_epcs_read	// loop[r_opt_count]
 	subi	r_opt_count, r_opt_count, 1
 	bne		r_opt_count, r_zero, 1b
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
-	srli	r_temp, r_read_data, 1
+	srli	r_temp, r_epcs_read, 1
 	andi	r_temp, r_temp, 0x0010
-	ori		r_elf_base, r_elf_base, r_temp	// set24
+	or		r_elf_base, r_elf_base, r_temp	// set24
 	roli	r_elf_base, r_elf_base, (32-12)	// rotate
-
-//	7650_0000_0000_0000_0000_0000_0000_0000 set27_25
-//	0000_7650_0000_0000_0000_0000_0000_3210 loop[6]
-//	3210_0000_7650_0000_0000_0000_0000_7654 loop[5]
-//	7654_3210_0000_7650_0000_0000_0000_1098 loop[4]
-//	1098_7654_3210_0000_7650_0000_0000_5432 loop[3]
-//	5432_1098_7654_3210_0000_7650_0000_9876 loop[2]
-//	9876_5432_1098_7654_3210_0000_7650_3210 loop[1]
-//	9876_5432_1098_7654_3210_0000_7654_3210 set24
-//	0000_7654_3210_9876_5432_1098_7654_3210 rotate
 
 	// Convert bits to bytes
 	addi	r_elf_base, r_elf_base, 7
 	srli	r_elf_base, r_elf_base, 3
 
-	// Check ELF header
+	// Check ELF header (e_ident)
 	// If no ELF header found at r_elf_base, retry at r_elf_base+1
 	// (This is workaround for difference for compression data)
 	orhi	r_elf_base, r_elf_base, %hi(EPCS_READ_BYTES << 24)
-	mov		r_write_data, r_elf_base
+	mov		r_epcs_write, r_elf_base
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
 	MOVI32	r_temp, ELF_HEADER_LE
-	beq		r_read_data, r_temp, 1f
+	beq		r_epcs_read, r_temp, 1f
 	addi	r_elf_base, r_elf_base, 1
-	mov		r_write_data, r_elf_base
+	mov		r_epcs_write, r_elf_base
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
-	bne		r_read_data, r_temp, halt
+	bne		r_epcs_read, r_temp, halt
 1:
 #endif	/* EPCS_ELF_AFTER_SOF */
 
-	// Check ELF type & machine
-	addi	r_write_data, r_elf_base, 16	// offsetof(elf32_ehdr, e_type)
+	// Check e_type and e_machine
+	addi	r_epcs_write, r_elf_base, 16	// offsetof(Elf32_ehdr, e_type)
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	MOVI32	r_temp, (ET_EXEC | (EM_NIOS2 << 16))
-	bne		r_read_data, r_temp, halt
+	bne		r_epcs_read, r_temp, halt
 
-	// Read e_entry, e_phoff, e_phsize and e_phnum
+	// Read e_entry, e_phoff, e_phentsize and e_phnum
 	RCALL	epcs_txrx_word			// e_version
 	RCALL	epcs_txrx_word			// e_entry
-	mov		r_e_entry, r_read_data
+	mov		r_e_entry, r_epcs_read
 	RCALL	epcs_txrx_word			// e_phoff
-	add		r_e_phoff, r_elf_base, r_read_data
+	add		r_e_phoff, r_elf_base, r_epcs_read
 	RCALL	epcs_txrx_word			// e_shoff
 	RCALL	epcs_txrx_word			// e_flags
-	RCALL	epcs_txrx_word			// e_ehsize, e_phentsize
-	srli	r_e_phentsize, r_read_data, 16
-	RCALL	epcs_txrx_word			// e_phnum
-	andi	r_e_phnum, r_read_data, 0xffff
+	RCALL	epcs_txrx_word			// lo16:e_ehsize, hi16:e_phentsize
+	srli	r_e_phentsize, r_epcs_read, 16
+	RCALL	epcs_txrx_word			// lo16:e_phnum, hi16:e_shentsize
+	andi	r_e_phnum, r_epcs_read, 0xffff
 	EPCS_CLOSE
 
 load_program_header:
-	// Read p_type
-	mov		r_write_data, r_e_phoff
+	// Read Elf32_phdr fields
+	mov		r_epcs_write, r_e_phoff
 	RCALL	epcs_txrx_word			// opcode and address
 	RCALL	epcs_txrx_word			// p_type
-	MOVI32	r_temp, PT_LOAD
-	bne		r_read_data, r_temp, next_program_header
-
-	// When p_type == PT_LOAD, read p_offset, p_paddr and p_filesz
+	mov		r_p_type, r_epcs_read
 	RCALL	epcs_txrx_word			// p_offset
-	mov		r_p_offset, r_read_data
+	add		r_epcs_write, r_elf_base, r_epcs_read
 	RCALL	epcs_txrx_word			// p_vaddr
 	RCALL	epcs_txrx_word			// p_paddr
-	mov		r_p_paddr, r_read_data
+	mov		r_p_paddr, r_epcs_read
 	RCALL	epcs_txrx_word			// p_filesz
-	mov		r_p_filesz, r_read_data
+	add		r_paddr_fend, r_p_paddr, r_epcs_read
 	RCALL	epcs_txrx_word			// p_memsz
-	mov		r_p_memsz, r_read_data
+	beq		r_epcs_read, r_zero, next_program_header
+	add		r_paddr_mend, r_p_paddr, r_epcs_read
+	beq		r_paddr_fend, r_p_paddr, fill_remainder_area
 	EPCS_CLOSE
 
-	// Load section data
-	beq		r_p_filesz, r_zero, next_program_header
-	add		r_write_data, r_elf_base, r_p_offset
 	RCALL	epcs_txrx_word			// opcode and address
-1:	RCALL	epcs_txrx_word			// section data
-	stw		r_read_data, 0(r_p_paddr)
-	addi	r_p_paddr, r_p_paddr, 4
-	addi	r_p_filesz, r_p_filesz, -4
-	addi	r_p_memsz, r_p_memsz, -4
-	blt		r_zero, r_p_filesz, 1b
+#ifdef EPCS_COMPRESS_LZSS
+	MOVI32	r_temp, PT_LOAD_LZSS
+	beq		r_temp, r_p_type, decompress_lzss
+#endif	/* EPCS_COMPRESS_LZSS */
+#ifdef EPCS_COMPRESS_LZ4
+	MOVI32	r_temp, PT_LOAD_LZ4
+	beq		r_temp, r_p_type, decompress_lz4
+#endif	/* EPCS_COMPRESS_LZ4 */
+	MOVI32	r_temp, PT_LOAD
+	bne		r_temp, r_p_type, next_program_header
 
-	// Fill remainder area after file image
-	bge		r_zero, r_p_memsz, 2f
+	// Load uncompressed data (Must be 4-byte aligned)
+1:	RCALL	epcs_txrx_word
+	stw		r_epcs_read, 0(r_p_paddr)
+	addi	r_p_paddr, r_p_paddr, 4
+	bltu	r_p_paddr, r_paddr_fend, 1b
+	br		fill_remainder_area
+
+	// Fill remainder area (Must be 4-byte aligned)
 1:	stw		r_zero, 0(r_p_paddr)
 	addi	r_p_paddr, r_p_paddr, 4
-	addi	r_p_memsz, r_p_memsz, -4
-	blt		r_zero, r_p_memsz, 1b
-2:
+fill_remainder_area:
+	bltu	r_p_paddr, r_paddr_mend, 1b
 
 next_program_header:
 	EPCS_CLOSE
@@ -318,53 +385,102 @@ next_program_header:
 start_program:
 	jmp		r_e_entry
 
+#ifdef EPCS_COMPRESS_LZSS
+#error LZSS decompressor is not implemented
+decompress_lzss:
+	br		halt
+#endif	/* EPCS_COMPRESS_LZSS */
+
+#ifdef EPCS_COMPRESS_LZ4
+#define r_lz4_15		r12
+#define r_lz4_255		r13
+#define r_lz4_lit		r14
+#define r_lz4_match		r15
+#define r_lz4_window	r16
+decompress_lz4:
+	// Initialize constants
+	MOVI32	r_lz4_255, 255
+	MOVI32	r_lz4_15, 15
+1:	// Read token
+	EPCS_TXRX r_zero, r_temp
+	srli	r_lz4_lit, r_temp, 4
+	andi	r_lz4_match, r_temp, 15
+	bne		r_lz4_lit, r_lz4_15, 4f
+2:	// Read additional literal length
+	EPCS_TXRX r_zero, r_temp
+	add		r_lz4_lit, r_lz4_lit, r_temp
+	beq		r_temp, r_lz4_255, 2b
+3:	// Read literal
+	EPCS_TXRX r_zero, r_temp
+	stb		r_temp, 0(r_p_paddr)
+	addi	r_p_paddr, r_p_paddr, 1
+4:	bgtu	r_lz4_lit, r_zero, 3b
+	// Read offset and calc window position
+	// (if offset == 0, stop decompressing)
+	EPCS_TXRX r_zero, r_temp
+	sub		r_lz4_window, r_p_paddr, r_temp
+	EPCS_TXRX r_zero, r_temp
+	slli	r_temp, r_temp, 8
+	sub		r_lz4_window, r_lz4_window, r_temp
+	beq		r_lz4_window, r_p_paddr, fill_remainder_area
+	addi	r_lz4_match, r_lz4_match, 4
+	add		r_lz4_match, r_lz4_match, r_lz4_window
+	bne		r_lz4_match, r_lz4_15, 6f
+5:	// Read additional match bytes
+	EPCS_TXRX r_zero, r_temp
+	add		r_lz4_match, r_lz4_match, r_temp
+	beq		r_temp, r_lz4_255, 5b
+6:	// Output matched data
+	ldbu	r_temp, 0(r_lz4_window)
+	stb		r_temp, 0(r_p_paddr)
+	addi	r_lz4_window, r_lz4_window, 1
+	addi	r_p_paddr, r_p_paddr, 1
+	bltu	r_lz4_window, r_lz4_match, 6b
+	br		1b
+#endif	/* EPCS_COMPRESS_LZ4 */
+
 halt:
 	br		halt
 
 /*
  * epcs_txrx_word - TX and RX 4 bytes (Must be called by RCALL)
- *   Input:  r_write_data - TX data (MSB first, big-endian)
- *   Output: r_read_data  - RX data (MSB first, little-endian)
+ *   Input:  r_epcs_write - TX data (MSB first, big-endian)
+ *   Output: r_epcs_read  - RX data (MSB first, little-endian)
  */
 epcs_txrx_word:
-	MOVI32	r_temp, EPCS_CONTROL_SSO
-	stwio	r_temp, EPCS_CONTROL(r_epcs_base)
-	movui	r_byte_count, 4
-	mov		r_read_data, r_zero
-1:	roli	r_write_data, r_write_data, 8
-	stwio	r_write_data, EPCS_TXDATA(r_epcs_base)
-2:	ldwio	r_temp, EPCS_STATUS(r_epcs_base)
-	andi	r_temp, r_temp, EPCS_STATUS_RRDY
-	beq		r_temp, r_zero, 2b
-	ldbuio	r_temp, EPCS_RXDATA(r_epcs_base)
-	or		r_read_data, r_read_data, r_temp
-	roli	r_read_data, r_read_data, 24
-	addi	r_byte_count, r_byte_count, -1
-	bne		r_byte_count, r_zero, 1b
+	EPCS_OPEN
+	MOVI32	r_epcs_count, 4
+	mov		r_epcs_read, r_zero
+1:	roli	r_epcs_write, r_epcs_write, 8
+	EPCS_TXRX r_epcs_write, r_temp
+	or		r_epcs_read, r_epcs_read, r_temp
+	roli	r_epcs_read, r_epcs_read, 24
+	addi	r_epcs_count, r_epcs_count, -1
+	bne		r_epcs_count, r_zero, 1b
 	RRET
 
 #ifdef EPCS_ELF_AFTER_SOF
 /*
  * extract_bit5s - Extract bit5 of each byte (Must be called by RCALL)
- *   Input:  r_read_data (0b**A*****_**B*****_**C*****_**D*****)
- *   Output: r_temp      (0b00000000_00000000_00000000_0000ABCD)
+ *   Input:  r_epcs_read (0b**A*****_**B*****_**C*****_**D*****)
+ *   Output: r_epcs_read (0b00000000_00000000_00000000_0000ABCD)
  */
 extract_bit5s:
-# xxAxxxxxxxBxxxxxxxCxxxxxxxDxxxxx (r_read_data)
-	ori		r_read_data, r_read_data, 0xdfdf
-	orhi	r_read_data, r_read_data, 0xdfdf
-# 11A1111111B1111111C1111111D11111 (r_read_data)
-	srli	r_temp, r_read_data, 7
+# xxAxxxxxxxBxxxxxxxCxxxxxxxDxxxxx (r_epcs_read)
+	ori		r_epcs_read, r_epcs_read, 0xdfdf
+	orhi	r_epcs_read, r_epcs_read, 0xdfdf
+# 11A1111111B1111111C1111111D11111 (r_epcs_read)
+	srli	r_temp, r_epcs_read, 7
 # 000011111A1111111B1111111C111111 (r_temp)
-	and		r_temp, r_temp, r_read_data
+	and		r_temp, r_temp, r_epcs_read
 # 000011111AB111111BC111111CD11111 (r_temp)
-	srli	r_read_data, r_temp, 14
-# 00000000000000000011111AB1111111 (r_read_data)
-	and		r_temp, r_temp, r_read_data
+	srli	r_epcs_read, r_temp, 14
+# 00000000000000000011111AB1111111 (r_epcs_read)
+	and		r_temp, r_temp, r_epcs_read
 # 000000000000000000C1111ABCD11111 (r_temp)
 	srli	r_temp, r_temp, 5
-	andi	r_temp, r_temp, 0xf
-# 0000000000000000000000000000ABCD (r_temp)
+	andi	r_epcs_read, r_temp, 0xf
+# 0000000000000000000000000000ABCD (r_epcs_read)
 	RRET
-#endif
+#endif	/* EPCS_ELF_AFTER_SOF */
 
