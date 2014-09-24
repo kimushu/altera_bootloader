@@ -57,6 +57,7 @@
 #define r_epcs_base		r3	/* Base of EPCS controller */
 #define r_elf_base		r4	/* Base of ELF data */
 #define r_opt_count		r5	/* SOF option bit count */
+#define r_elf_magic		r5	/* ELF header magic */
 #define r_e_entry		r5	/* (e_entry) */
 #define r_e_phoff		r6	/* (e_phoff) */
 #define r_e_phentsize	r7	/* (e_phentsize) */
@@ -250,8 +251,8 @@ _start:
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
-	MOVI32	r_temp, ELF_HEADER_LE
-	bne		r_epcs_read, r_temp, halt
+	MOVI32	r_elf_magic, ELF_HEADER_LE
+	bne		r_epcs_read, r_elf_magic, halt
 
 #else	/* EPCS_ELF_AFTER_SOF */
 
@@ -300,14 +301,14 @@ _start:
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
-	MOVI32	r_temp, ELF_HEADER_LE
-	beq		r_epcs_read, r_temp, 1f
+	MOVI32	r_elf_magic, ELF_HEADER_LE
+	beq		r_epcs_read, r_elf_magic, 1f
 	addi	r_elf_base, r_elf_base, 1
 	mov		r_epcs_write, r_elf_base
 	RCALL	epcs_txrx_word
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
-	bne		r_epcs_read, r_temp, halt
+	bne		r_epcs_read, r_elf_magic, halt
 1:
 #endif	/* EPCS_ELF_AFTER_SOF */
 
@@ -405,17 +406,19 @@ decompress_lz4:
 	EPCS_TXRX r_zero, r_temp
 	srli	r_lz4_lit, r_temp, 4
 	andi	r_lz4_match, r_temp, 15
-	bne		r_lz4_lit, r_lz4_15, 4f
+	bne		r_lz4_lit, r_lz4_15, 3f
 2:	// Read additional literal length
 	EPCS_TXRX r_zero, r_temp
 	add		r_lz4_lit, r_lz4_lit, r_temp
 	beq		r_temp, r_lz4_255, 2b
 3:	// Read literal
-	EPCS_TXRX r_zero, r_temp
+	add		r_lz4_lit, r_lz4_lit, r_p_paddr
+	beq		r_p_paddr, r_lz4_lit, 5f
+4:	EPCS_TXRX r_zero, r_temp
 	stb		r_temp, 0(r_p_paddr)
 	addi	r_p_paddr, r_p_paddr, 1
-4:	bgtu	r_lz4_lit, r_zero, 3b
-	// Read offset and calc window position
+	bltu	r_p_paddr, r_lz4_lit, 4b
+5:	// Read offset and calc window position
 	// (if offset == 0, stop decompressing)
 	EPCS_TXRX r_zero, r_temp
 	sub		r_lz4_window, r_p_paddr, r_temp
@@ -423,19 +426,19 @@ decompress_lz4:
 	slli	r_temp, r_temp, 8
 	sub		r_lz4_window, r_lz4_window, r_temp
 	beq		r_lz4_window, r_p_paddr, fill_remainder_area
-	addi	r_lz4_match, r_lz4_match, 4
-	add		r_lz4_match, r_lz4_match, r_lz4_window
-	bne		r_lz4_match, r_lz4_15, 6f
-5:	// Read additional match bytes
+	bne		r_lz4_match, r_lz4_15, 7f
+6:	// Read additional match bytes
 	EPCS_TXRX r_zero, r_temp
 	add		r_lz4_match, r_lz4_match, r_temp
-	beq		r_temp, r_lz4_255, 5b
-6:	// Output matched data
-	ldbu	r_temp, 0(r_lz4_window)
+	beq		r_temp, r_lz4_255, 6b
+7:	// Output matched data
+	addi	r_lz4_match, r_lz4_match, 4
+	add		r_lz4_match, r_lz4_match, r_lz4_window
+8:	ldbu	r_temp, 0(r_lz4_window)
 	stb		r_temp, 0(r_p_paddr)
 	addi	r_lz4_window, r_lz4_window, 1
 	addi	r_p_paddr, r_p_paddr, 1
-	bltu	r_lz4_window, r_lz4_match, 6b
+	bltu	r_lz4_window, r_lz4_match, 8b
 	br		1b
 #endif	/* EPCS_COMPRESS_LZ4 */
 

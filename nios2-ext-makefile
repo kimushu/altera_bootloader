@@ -132,7 +132,7 @@ def ext_makefile(args)
     end
     if(args[:compress])
       puts "Info: ELF will be compressed (Method: #{args[:compress].size == 0 ? "default" : args[:compress]})"
-      compress = "ELFCOMPRESS = elfcompress\nELFCOMPRESS_METHOD = #{args[:compress]}\n"
+      compress = "ELFCOMPRESS = elfcompress\nELFCOMPRESS_METHOD = #{args[:compress]}"
     else
       compress = "ELFCOMPRESS = @true"
     end
@@ -164,7 +164,8 @@ MAKE_TEMPLATE_COMMON = <<EOD
 #------------------------------------------------------------------------------
 HEX := $(basename $(ELF)).hex
 HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
-%s#{0;nil}$(HEX) : $(ELF)
+%s#{0;nil}
+$(HEX) : $(ELF) $(MAKEFILE_LIST)
 	@$(ECHO) Info: Creating $@
 	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@ || (rm -f $@; false)
 	$(ELFCOMPRESS) $(addprefix -m,$(ELFCOMPRESS_METHOD)) $@ || (rm -f $@; false)
