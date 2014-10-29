@@ -70,7 +70,7 @@ if(__FILE__ == $0)
     o.separator("\nOptional options:")
     o.on('-i INST', 'Instance name of EPCS controller') {|v| args[:instance] = v }
     o.parse!(ARGV)
-    if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].nitems != 1)
+    if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].count {|v| !v.nil? } != 1)
       puts o.help
       abort
     end
