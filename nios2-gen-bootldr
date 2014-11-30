@@ -4,77 +4,164 @@
 #================================================================================
 require 'optparse'
 require 'rexml/document'
+require 'tempfile'
 
-def gen_bootldr(args)
+class Array
+  def addprefix(prefix)
+    self.map {|v| prefix + v }
+  end
+  def addsuffix(suffix)
+    self.map {|v| v + suffix }
+  end
+end
+
+def run_cmd(*cmd)
+  cmd = cmd.flatten.join(" ")
+  puts "Info: Run: #{cmd}"
+  print `#{cmd}`
+  abort "Error: Command failed (status=#{$?.exitstatus})" unless $?.exitstatus == 0
+end
+
+def load_sopcinfo(args)
   file = args[:sopcinfo]
   puts "Info: Loading #{file}"
   doc = REXML::Document.new(open(file))
-  epcs = nil
-  REXML::XPath.each(doc, '//module[@kind="altera_avalon_epcs_flash_controller"]') {|mod|
-    next if (args[:instance] and args[:instance] != mod.attribute("name"))
-    abort "Error: You must specify an instance name by '-i <name>' option." if epcs
-    epcs = mod
-    break if args[:instance]
+  REXML::XPath.each(doc, "//module[@name=\"#{args[:instance]}\"]") {|mod|
+    args[:module] = mod
+    args[:kind] = mod.attribute('kind').value
+    break
   }
-  abort "Error: No epcs_flash_controller found." if !epcs
-  as = {}
-  REXML::XPath.each(epcs, 'assignment/name') {|v|
-    as[v.text] = REXML::XPath.first(v.parent, 'value').text
-  }
-  src = File.dirname(File.expand_path(__FILE__))
-  words = as['embeddedsw.CMacro.REGISTER_OFFSET'].to_i / 4
-  out = as['embeddedsw.memoryInfo.MEM_INIT_FILENAME']
-  do_cmd = proc {|cmd|
-    puts "Info: #{cmd}"
-    print `#{cmd}`
-    abort "Error: Command failed (status=#{$?.exitstatus})" if $?.exitstatus != 0
-  }
-  cmd = "nios2-elf-gcc -nostartfiles -o #{out}.tmp"
-  cmd += " -DEPCS_BOOTROM_WORDS=#{words}"
-  if(args[:sectors])
-    cmd += " -DEPCS_ELF_SECTORS=#{args[:sectors]}"
-  elsif(args[:bytes])
-    cmd += " -DEPCS_ELF_BYTES=#{args[:bytes]}"
-  elsif(args[:after_sof])
-    cmd += " -DEPCS_ELF_AFTER_SOF=#{args[:after_sof]}"
+  case(args[:kind])
+  when 'altera_avalon_epcs_flash_controller'
+    args[:epcs] = true
+  when 'altera_avalon_spi'
+    args[:spi] = true
+  when nil
+    abort "Error: Instance `#{args[:instance]}' not found"
+  else
+    abort "Error: Module kind `#{args[:kind]}' is not supported"
   end
-  cmd += " -DEPCS_COMPRESS_LZ4=1"
-  cmd += " #{src}/epcs/epcs_bootloader.S"
-  do_cmd.call(cmd)
-  do_cmd.call("nios2-elf-objcopy --change-section-lma .text=0 #{out}.tmp")
-  open("#{out}.hex", "w") {|o|
+end
+
+def generate(args)
+  abort "Error: --head cannot be used for EPCS/EPCQx1" if args[:epcs] and args[:head]
+  abort "Error: --after cannot be used for SPI flash" if args[:spi] and args[:after]
+
+  defines = []
+  defines << "EPCS_ELF_SECTORS=0x%x" % args[:sectors] if args[:sectors]
+  defines << "EPCS_ELF_BYTES=0x%x" % args[:bytes] if args[:bytes]
+  defines << "EPCS_ELF_AFTER_SOF=1" if args[:after]
+
+  if(args[:epcs])
+    words = nil
+    output = args[:output]
+    REXML::XPath.each(args[:module], 'assignment/name') {|v|
+      d = REXML::XPath.first(v.parent, 'value').text
+      case(v.text)
+      when 'embeddedsw.CMacro.REGISTER_OFFSET'
+        words ||= d.to_i / 4
+      when 'embeddedsw.memoryInfo.MEM_INIT_FILENAME'
+        output ||= "#{d}.hex"
+      end
+    }
+    defines << "EPCS_BOOTROM_WORDS=#{words}"
+  end
+
+  if(args[:spi])
+    words = 0x100
+    output = args[:output] || "#{args[:instance]}_boot.hex"
+    base = nil
+    REXML::XPath.each(args[:module].document,
+      '//interface[@name="data_master"]/memoryBlock/name') {|v|
+      next unless v.text == "#{args[:instance]}.spi_control_port"
+      base = REXML::XPath.first(v.parent, 'baseAddress').text.to_i
+      break
+    }
+    abort "Error: base address of #{args[:instance]} cannot be detected" unless base
+    defines << ("SPI_CONTROLLER_BASE=0x%x" % base)
+  end
+
+  args[:compress].split(',').each {|method|
+    defines << "ENABLE_COMPRESS_#{method.upcase}=1"
+  } if args[:compress]
+
+  tmp = Tempfile.open(self.class.name)
+  tmp.close
+
+  # compile
+  run_cmd(
+    "nios2-elf-gcc",
+    "-nostartfiles",
+    "-o #{tmp.path}",
+    defines.addprefix("-D"),
+    "#{File.dirname(File.expand_path(__FILE__))}/epcs/epcs_bootloader.S"
+  )
+
+  # rebase
+  run_cmd(
+    "nios2-elf-objcopy",
+    "--change-section-lma .text=0",
+    "#{tmp.path}"
+  )
+
+  # convert
+  run_cmd(
+    "elf2hex",
+    "--width=32",
+    "--base=0",
+    "--end=#{words*4-1}",
+    "--input=#{tmp.path}",
+    "--output=#{tmp.path}"
+  )
+
+  # add comment
+  open(output, "w") {|o|
     o.puts("; This file is created by #{File.basename(__FILE__)}")
+    o.puts("; Date: #{Time.now}")
     o.puts("; Configuration:")
-    o.puts(";   EPCS_BOOTROM_WORDS = 0x%x" % words)
-    o.puts(";   EPCS_ELF_SECTORS   = #{args[:sectors]}") if args[:sectors]
-    o.puts(";   EPCS_ELF_BYTES     = #{args[:bytes]}") if args[:bytes]
-    o.puts(";   EPCS_ELF_AFTER_SOF = #{args[:after_sof]}") if args[:after_sof]
-    o.puts(";   EPCS_COMPRESS_LZ4  = 1")
+    defines.each {|d|
+      o.puts(";   #{d.split("=", 2).join(" = ")}")
+    }
   }
-  do_cmd.call("elf2hex --width=32 --input=#{out}.tmp --output=#{out}.tmp --base=0 --end=#{words*4-1}")
-  do_cmd.call("cat #{out}.tmp >> #{out}.hex")
-  do_cmd.call("rm #{out}.tmp")
-  puts "Info: Completed."
-  puts "Info: Bootloader is located at '#{out}.hex'"
+  run_cmd(
+    "cat",
+    "#{tmp.path} >> #{output}"
+  )
+  puts "Info: Bootloader was generated as #{output}"
 end
 
 if(__FILE__ == $0)
-  args = {}
+  args = {:compress => 'lz4'}
   OptionParser.new {|o|
     o.banner += " <sopcinfo>"
-    o.summary_width = 16
-    o.separator("\nAlternative options for ELF placement:")
-    o.on('-s SECTORS', 'Number of sectors to place ELF image') {|v| args[:sectors] = v.to_i }
-    o.on('-b BYTES', 'Number of bytes to place ELF image') {|v| args[:bytes] = v.to_i }
-    o.on('-a', 'Place ELF just after SOF') { args[:after_sof] = 1 }
+    o.summary_width = 20
+    o.separator("\nMandatory options:")
+    o.on('-i', '--instance=NAME',
+         'Instance name of EPCS/EPCQx1 controller or SPI master') {|v| args[:instance] = v }
+    o.separator("\nAlternative options:")
+    o.on('-s', '--sectors=NUM', Integer,
+         'Load ELF stored at NUM sectors ahead of the end of flash') {|v| args[:sectors] = v }
+    o.on('-b', '--bytes=NUM', Integer,
+         'Load ELF stored at NUM bytes ahead of the end of flash') {|v| args[:bytes] = v }
+    o.on('-a', '--after',
+         'Load ELF stored after configuration data (EPCS/EPCQx1 only)') { args[:after] = true }
+    o.on('-h', '--head',
+         'Load ELF stored at the head of flash (SPI only)') { args[:head] = true }
     o.separator("\nOptional options:")
-    o.on('-i INST', 'Instance name of EPCS controller') {|v| args[:instance] = v }
+    o.on('-o', '--output=FILE',
+         'Output file name (default: named from instance name)') {|v| args[:output] = v }
+    o.on('-c', '--compress=NAME',
+         'Enable compression (default: lz4)') {|v| args[:compress] = v }
     o.parse!(ARGV)
-    if(ARGV.size != 1 or [args[:sectors], args[:bytes], args[:after_sof]].count {|v| !v.nil? } != 1)
+    if(ARGV.size != 1 or !args[:instance] or
+       [args[:sectors], args[:bytes], args[:after], args[:head]].count {|v| !v.nil? } != 1)
       puts o.help
       abort
     end
+    args[:sopcinfo] = ARGV.shift
   }
-  args[:sopcinfo] = ARGV.first
-  gen_bootldr(args)
+  load_sopcinfo(args)
+  generate(args)
 end
+
+# vim:et sts=2 sw=2

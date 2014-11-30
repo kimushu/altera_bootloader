@@ -6,11 +6,18 @@
 
 /*
  * Supported EPCS devices:
- * | Part#   | Capacity      | Sector size   | SiID |
+ * | Part#   | Capacity      | Sector size   | ID*1 |
  * | EPCS1   |   1Mb (128kB) | 256kb  (32kB) | 0x10 |
  * | EPCS4   |   4Mb (512kB) | 512kb  (64kB) | 0x12 |
  * | EPCS16  |  16Mb (  2MB) | 512kb  (64kB) | 0x14 |
  * | EPCS64  |  64Mb (  8MB) | 512kb  (64kB) | 0x16 |
+ * (*1: Read by command `0xab')
+ *
+ * Supported SPI flash devices:
+ * (SPI_CONTROLLER_BASE must be defined)
+ * | Mfr.   | Part#   | Capacity      | Sector size   | DevID |
+ * | Micron | M25P20  |   2Mb (256kB) | 512kb  (64kB) | 2012h |
+ * | Micron | M25P40  |   4Mb (512kB) | 512kb  (64kB) | 2013h |
  */
 
 /*
@@ -18,6 +25,7 @@
  */
 .set noat
 
+#ifndef SPI_CONTROLLER_BASE
 /*
  * Length of EPCS Controller's Boot ROM Memory (in words)
  */
@@ -26,6 +34,7 @@
 # define EPCS_BOOTROM_WORDS	0x100	// Other device families
 #endif
 .equ	BOOTROM_WORDS,	EPCS_BOOTROM_WORDS
+#endif	/* !SPI_CONTROLLER_BASE */
 
 #if !defined(EPCS_ELF_BYTES) && !defined(EPCS_ELF_SECTORS) && !defined(EPCS_ELF_AFTER_SOF)
 /*
@@ -112,6 +121,10 @@
 	(defined(EPCS_ELF_BYTES) && defined(EPCS_ELF_AFTER_SOF)) || \
 	(defined(EPCS_ELF_SECTORS) && defined(EPCS_ELF_AFTER_SOF))
 	.print "**** One of EPCS_ELF_BYTES, EPCS_ELF_SECTORS or EPCS_ELF_AFTER_SOF must be defined ****"
+	.err
+#endif
+#if (defined(SPI_CONTROLLER_BASE) && defined(EPCS_ELF_AFTER_SOF))
+	.print "**** SPI_CONTROLLER_BASE and EPCS_ELF_AFTER_SOF cannot be used together ****"
 	.err
 #endif
 
@@ -215,19 +228,31 @@ _start:
 	flushp
 
 	// Get EPCS controller base address
+#ifndef SPI_CONTROLLER_BASE
 	nextpc	r_epcs_base
 	ori		r_epcs_base, r_epcs_base, (EPCS_BOOTROM_WORDS * 4) - 1
 	addi	r_epcs_base, r_epcs_base, 1
+#else	/* SPI_CONTROLLER_BASE */
+	MOVI32	r_epcs_base, SPI_CONTROLLER_BASE
+#endif	/* SPI_CONTROLLER_BASE */
 
 #ifndef EPCS_ELF_AFTER_SOF
+#ifndef SPI_CONTROLLER_BASE
 	// Get EPCS Silicon ID
 	movhi	r_epcs_write, %hi(EPCS_READ_SILICON_ID << 24)
 	RCALL	epcs_txrx_word
+#else	/* SPI_CONTROLLER_BASE */
+	movhi	r_epcs_write, %hi(EPCS_READ_DEVICE_ID << 24)
+#endif	/* SPI_CONTROLLER_BASE */
 	RCALL	epcs_txrx_word
 	EPCS_CLOSE
 
 	// Calculate EPCS capacity
+#ifndef SPI_CONTROLLER_BASE
 	movui	r_elf_base, (1 << 1)
+#else	/* SPI_CONTROLLER_BASE */
+	movui	r_elf_base, 1
+#endif	/* SPI_CONTROLLER_BASE */
 	sll		r_elf_base, r_elf_base, r_epcs_read
 
 #ifdef EPCS_ELF_BYTES
