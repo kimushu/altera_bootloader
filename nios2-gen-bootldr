@@ -48,9 +48,10 @@ def generate(args)
   abort "Error: --after cannot be used for SPI flash" if args[:spi] and args[:after]
 
   defines = []
-  defines << "EPCS_ELF_SECTORS=0x%x" % args[:sectors] if args[:sectors]
-  defines << "EPCS_ELF_BYTES=0x%x" % args[:bytes] if args[:bytes]
-  defines << "EPCS_ELF_AFTER_SOF=1" if args[:after]
+  defines << "ELF_SECTORS_AHEAD=0x%x" % args[:sectors] if args[:sectors]
+  defines << "ELF_BYTES_AHEAD=0x%x" % args[:bytes] if args[:bytes]
+  defines << "ELF_AFTER_SOF=1" if args[:after]
+  defines << "ELF_AT_HEAD=1" if args[:head]
 
   if(args[:epcs])
     words = nil
@@ -108,6 +109,7 @@ def generate(args)
   run_cmd(
     "elf2hex",
     "--width=32",
+    "--record=4",
     "--base=0",
     "--end=#{words*4-1}",
     "--input=#{tmp.path}",
