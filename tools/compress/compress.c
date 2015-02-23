@@ -29,7 +29,10 @@ static Elf32_Ehdr *ehdr;
 int main(int argc, char *argv[])
 {
 	int result;
+	extern char *program_invocation_name;
+	extern char *program_invocation_short_name;
 
+	program_invocation_name = program_invocation_short_name;
 	select_method("lz4");
 
 	result = parse_options(argc, argv);
