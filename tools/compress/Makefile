@@ -1,13 +1,13 @@
 
-TARGET = elfcompress
+TARGET = ../../nios2-elf-compress
 
 LZ4_URL = https://github.com/Cyan4973/lz4.git
-# LZ4_BRANCH = r122
+LZ4_BRANCH = r122
 
 .PHONY: all
 all: $(TARGET)
 
-$(TARGET): elfcompress.c lz4/liblz4.a
+$(TARGET): compress.c lz4/liblz4.a
 	gcc -o $@ -Wall -I. $^
 
 .PHONY: clean

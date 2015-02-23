@@ -132,7 +132,7 @@ def ext_makefile(args)
     end
     if(args[:compress])
       puts "Info: ELF will be compressed (Method: #{args[:compress].size == 0 ? "default" : args[:compress]})"
-      compress = "ELFCOMPRESS = elfcompress\nELFCOMPRESS_METHOD = #{args[:compress]}"
+      compress = "ELFCOMPRESS = nios2-elf-compress\nELFCOMPRESS_METHOD = #{args[:compress]}"
     else
       compress = "ELFCOMPRESS = @true"
     end
@@ -274,6 +274,14 @@ COF_TEMPLATE_SOF = <<EOD
 	</options>
 </cof>
 EOD
+
+if(!Array.method_defined?(:nitems))
+  class Array
+    def nitems
+      count {|i| !i.nil? }
+    end
+  end
+end
 
 if(__FILE__ == $0)
   args = {}

@@ -93,16 +93,25 @@ def generate(args)
   run_cmd(
     "nios2-elf-gcc",
     "-nostartfiles",
+    "-g",
     "-o #{tmp.path}",
     defines.addprefix("-D"),
     "#{File.dirname(File.expand_path(__FILE__))}/epcs/epcs_bootloader.S"
   )
 
+  # debug output
+  run_cmd(
+    "cp",
+    tmp.path,
+    output.sub(/\.hex$/, '_debug.elf')
+  ) if args[:debug]
+
   # rebase
   run_cmd(
     "nios2-elf-objcopy",
+    "--strip-debug",
     "--change-section-lma .text=0",
-    "#{tmp.path}"
+    tmp.path
   )
 
   # convert
@@ -110,6 +119,8 @@ def generate(args)
     "elf2hex",
     "--width=32",
     "--record=4",
+    # "--width=8",
+    # "--record=1",
     "--base=0",
     "--end=#{words*4-1}",
     "--input=#{tmp.path}",
@@ -154,6 +165,8 @@ if(__FILE__ == $0)
          'Output file name (default: named from instance name)') {|v| args[:output] = v }
     o.on('-c', '--compress=NAME',
          'Enable compression (default: lz4)') {|v| args[:compress] = v }
+    o.on('-d', '--debug=BASE',
+         'Output ELF image for debugging') { |v| args[:debug] = v }
     o.parse!(ARGV)
     if(ARGV.size != 1 or !args[:instance] or
        [args[:sectors], args[:bytes], args[:after], args[:head]].count {|v| !v.nil? } != 1)
