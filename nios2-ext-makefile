@@ -275,6 +275,14 @@ COF_TEMPLATE_SOF = <<EOD
 </cof>
 EOD
 
+if(!Array.method_defined?(:nitems))
+  class Array
+    def nitems
+      count {|i| !i.nil? }
+    end
+  end
+end
+
 if(__FILE__ == $0)
   args = {}
   OptionParser.new {|o|
