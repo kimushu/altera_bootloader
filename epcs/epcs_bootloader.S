@@ -87,6 +87,11 @@
 #define LZSS_ESC_CHAR	0xffff
 #define LZSS_ESC_END	0xfffe
 
+/*
+ * Cache size
+ */
+#define ICACHE_MAX_SIZE		(64 * 1024)
+
 /*********************************************************************************
  * Macros
  *********************************************************************************/
@@ -185,9 +190,9 @@ _start:
 	wrctl	status, r_zero
 
 	// Initialize instruction cache
-	movhi	r_temp, %hi(0x10000)
-1:	initi	r_temp
-	addi	r_temp, r_temp, -32
+	MOVI32	r_temp, ICACHE_MAX_SIZE
+1:	addi	r_temp, r_temp, -32
+	initi	r_temp
 	bne		r_temp, r_zero, 1b
 	flushp
 
