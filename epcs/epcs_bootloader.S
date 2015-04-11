@@ -91,6 +91,7 @@
  * Cache size
  */
 #define ICACHE_MAX_SIZE		(64 * 1024)
+#define DCACHE_MAX_SIZE		(64 * 1024)
 
 /*********************************************************************************
  * Macros
@@ -195,6 +196,12 @@ _start:
 	initi	r_temp
 	bne		r_temp, r_zero, 1b
 	flushp
+
+	// Initialize data cache
+	MOVI32	r_temp, DCACHE_MAX_SIZE
+1:	addi	r_temp, r_temp, -32
+	initd	0(r_temp)
+	bne		r_temp, r_zero, 1b
 
 #if defined(EPCS_BOOTROM_WORDS)
 	// Get EPCS controller base address
