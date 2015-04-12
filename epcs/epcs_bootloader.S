@@ -178,16 +178,6 @@
 	ldwio	\rRX, REG_RXDATA(r_spim_base)
 .endm
 
-/*
- * Close flash connection (Stop CS# output)
- */
-.macro FLASH_CLOSE
-99:	ldwio	r_temp, REG_STATUS(r_spim_base)
-	andi	r_temp, r_temp, SPI_STATUS_TMT
-	beq		r_temp, r_zero, 99b
-	stwio	r_zero, REG_CONTROL(r_spim_base)
-.endm
-
 /*********************************************************************************
  * Code
  *********************************************************************************/
@@ -221,7 +211,7 @@ _start:
 	MOVI32	r_spim_base, SPI_CONTROLLER_BASE
 #endif	/* SPI_CONTROLLER_BASE */
 
-	FLASH_CLOSE
+	RCALL	flash_close
 
 #if defined(ELF_AT_HEAD)
 	MOVI32	r_elf_base, 0
@@ -245,7 +235,7 @@ _start:
 	movui	r_elf_base, 1
 	sll		r_elf_base, r_elf_base, r_spim_read
 #endif	/* SPI_CONTROLLER_BASE */
-	FLASH_CLOSE
+	RCALL	flash_close
 
 #if defined(ELF_BYTES_AHEAD)
 	// Calculate ELF base address (EndOfFlash - ELF_BYTES_AHEAD)
@@ -269,7 +259,7 @@ _start:
 	mov		r_spim_write, r_elf_base
 	RCALL	flash_txrx_word
 	RCALL	flash_txrx_word
-	FLASH_CLOSE
+	RCALL	flash_close
 	MOVI32	r_elf_magic, ELF_HEADER_LE
 	bne		r_spim_read, r_elf_magic, halt
 
@@ -291,7 +281,7 @@ _start:
 	slli	r_spim_read, r_spim_read, 1
 	RCALL	extract_bit5s
 	slli	r_elf_base, r_spim_read, 29	// set27_25
-	FLASH_CLOSE
+	RCALL	flash_close
 	MOVI32	r_spim_write, ((CMD_READ_BYTES << 24) + 48)
 	RCALL	flash_txrx_word
 	MOVI32	r_opt_count, 6
@@ -302,7 +292,7 @@ _start:
 	subi	r_opt_count, r_opt_count, 1
 	bne		r_opt_count, r_zero, 1b
 	RCALL	flash_txrx_word
-	FLASH_CLOSE
+	RCALL	flash_close
 	srli	r_temp, r_spim_read, 1
 	andi	r_temp, r_temp, 0x0010
 	or		r_elf_base, r_elf_base, r_temp	// set24
@@ -319,14 +309,14 @@ _start:
 	mov		r_spim_write, r_elf_base
 	RCALL	flash_txrx_word
 	RCALL	flash_txrx_word
-	FLASH_CLOSE
+	RCALL	flash_close
 	MOVI32	r_elf_magic, ELF_HEADER_LE
 	beq		r_spim_read, r_elf_magic, 1f
 	addi	r_elf_base, r_elf_base, 1
 	mov		r_spim_write, r_elf_base
 	RCALL	flash_txrx_word
 	RCALL	flash_txrx_word
-	FLASH_CLOSE
+	RCALL	flash_close
 	bne		r_spim_read, r_elf_magic, halt
 1:
 #endif	/* ELF_AFTER_SOF */
@@ -350,7 +340,7 @@ _start:
 	srli	r_e_phentsize, r_spim_read, 16
 	RCALL	flash_txrx_word			// lo16:e_phnum, hi16:e_shentsize
 	andi	r_e_phnum, r_spim_read, 0xffff
-	FLASH_CLOSE
+	RCALL	flash_close
 
 load_program_header:
 	// Read Elf32_phdr fields
@@ -369,7 +359,7 @@ load_program_header:
 	beq		r_spim_read, r_zero, next_program_header
 	add		r_paddr_mend, r_p_paddr, r_spim_read
 	beq		r_paddr_fend, r_p_paddr, fill_remainder_area
-	FLASH_CLOSE
+	RCALL	flash_close
 
 	RCALL	flash_txrx_word			// opcode and address
 #if defined(ENABLE_COMPRESS_LZSS)
@@ -397,7 +387,7 @@ fill_remainder_area:
 	bltu	r_p_paddr, r_paddr_mend, 1b
 
 next_program_header:
-	FLASH_CLOSE
+	RCALL	flash_close
 	add		r_e_phoff, r_e_phoff, r_e_phentsize
 	addi	r_e_phnum, r_e_phnum, -1
 	bne		r_e_phnum, r_zero, load_program_header
@@ -462,8 +452,18 @@ decompress_lz4:
 #endif	/* ENABLE_COMPRESS_LZ4 */
 
 halt:
-	FLASH_CLOSE
+	RCALL	flash_close
 1:	br		halt
+
+/*
+ * flash_close - Stop CS# output (Must be called by RCALL)
+ */
+flash_close:
+	ldwio	r_temp, REG_STATUS(r_spim_base)
+	andi	r_temp, r_temp, SPI_STATUS_TMT
+	beq		r_temp, r_zero, flash_close
+	stwio	r_zero, REG_CONTROL(r_spim_base)
+	RRET
 
 /*
  * flash_txrx_word - TX and RX 4 bytes (Must be called by RCALL)
