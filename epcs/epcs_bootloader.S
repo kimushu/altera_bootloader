@@ -192,15 +192,15 @@ _start:
 
 	// Initialize instruction cache
 	MOVI32	r_temp, ICACHE_MAX_SIZE
-1:	addi	r_temp, r_temp, -32
-	initi	r_temp
+1:	initi	r_temp
+	addi	r_temp, r_temp, -32
 	bne		r_temp, r_zero, 1b
 	flushp
 
 	// Initialize data cache
 	MOVI32	r_temp, DCACHE_MAX_SIZE
-1:	addi	r_temp, r_temp, -32
-	initd	0(r_temp)
+1:	initd	0(r_temp)
+	addi	r_temp, r_temp, -32
 	bne		r_temp, r_zero, 1b
 
 #if defined(EPCS_BOOTROM_WORDS)
