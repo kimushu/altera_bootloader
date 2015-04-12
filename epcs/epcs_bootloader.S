@@ -70,6 +70,8 @@
 #define REG_CONTROL			0x0c
 #define REG_SLAVESELECT		0x14
 
+#define SPI_STATUS_TMT		0x020
+#define SPI_STATUS_TRDY		0x040
 #define SPI_STATUS_RRDY		0x080
 #define SPI_CONTROL_SSO		0x400
 
@@ -166,6 +168,9 @@
  * Send and receive one byte
  */
 .macro FLASH_TXRX rTX,rRX
+99:	ldwio	r_temp, REG_STATUS(r_spim_base)
+	andi	r_temp, r_temp, SPI_STATUS_TRDY
+	beq		r_temp, r_temp, 99b
 	stwio	\rTX, REG_TXDATA(r_spim_base)
 99:	ldwio	r_temp, REG_STATUS(r_spim_base)
 	andi	r_temp, r_temp, SPI_STATUS_RRDY
@@ -177,6 +182,9 @@
  * Close flash connection (Stop CS# output)
  */
 .macro FLASH_CLOSE
+99:	ldwio	r_temp, REG_STATUS(r_spim_base)
+	andi	r_temp, r_temp, SPI_STATUS_TMT
+	beq		r_temp, r_zero, 99b
 	stwio	r_zero, REG_CONTROL(r_spim_base)
 .endm
 
@@ -454,7 +462,8 @@ decompress_lz4:
 #endif	/* ENABLE_COMPRESS_LZ4 */
 
 halt:
-	br		halt
+	FLASH_CLOSE
+1:	br		halt
 
 /*
  * flash_txrx_word - TX and RX 4 bytes (Must be called by RCALL)
