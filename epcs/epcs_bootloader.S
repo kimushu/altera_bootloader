@@ -412,32 +412,32 @@ decompress_lz4:
 	MOVI32	r_lz4_255, 255
 	MOVI32	r_lz4_15, 15
 1:	// Read token
-	FLASH_TXRX r_zero, r_temp
+	RCALL	flash_txrx_byte
 	srli	r_lz4_lit, r_temp, 4
 	andi	r_lz4_match, r_temp, 15
 	bne		r_lz4_lit, r_lz4_15, 3f
 2:	// Read additional literal length
-	FLASH_TXRX r_zero, r_temp
+	RCALL	flash_txrx_byte
 	add		r_lz4_lit, r_lz4_lit, r_temp
 	beq		r_temp, r_lz4_255, 2b
 3:	// Read literal
 	add		r_lz4_lit, r_lz4_lit, r_p_paddr
 	beq		r_p_paddr, r_lz4_lit, 5f
-4:	FLASH_TXRX r_zero, r_temp
+4:	RCALL	flash_txrx_byte
 	stb		r_temp, 0(r_p_paddr)
 	addi	r_p_paddr, r_p_paddr, 1
 	bltu	r_p_paddr, r_lz4_lit, 4b
 5:	// Read offset and calc window position
 	// (if offset == 0, stop decompressing)
-	FLASH_TXRX r_zero, r_temp
+	RCALL	flash_txrx_byte
 	sub		r_lz4_window, r_p_paddr, r_temp
-	FLASH_TXRX r_zero, r_temp
+	RCALL	flash_txrx_byte
 	slli	r_temp, r_temp, 8
 	sub		r_lz4_window, r_lz4_window, r_temp
 	beq		r_lz4_window, r_p_paddr, fill_remainder_area
 	bne		r_lz4_match, r_lz4_15, 7f
 6:	// Read additional match bytes
-	FLASH_TXRX r_zero, r_temp
+	RCALL	flash_txrx_byte
 	add		r_lz4_match, r_lz4_match, r_temp
 	beq		r_temp, r_lz4_255, 6b
 7:	// Output matched data
@@ -480,6 +480,15 @@ flash_txrx_word:
 	roli	r_spim_read, r_spim_read, 24
 	addi	r_spim_count, r_spim_count, -1
 	bne		r_spim_count, r_zero, 1b
+	RRET
+
+/*
+ * flash_txrx_byte - TX and RX 1 byte (Must be called by RCALL)
+ *   Input:  r_zero - TX data (Fixed to 0x00)
+ *   Output: r_temp - RX data
+ */
+flash_txrx_byte:
+	FLASH_TXRX r_zero, r_temp
 	RRET
 
 #if defined(ELF_AFTER_SOF)
