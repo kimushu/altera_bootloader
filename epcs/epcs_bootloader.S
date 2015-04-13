@@ -170,7 +170,7 @@
 .macro FLASH_TXRX rTX,rRX
 99:	ldwio	r_temp, REG_STATUS(r_spim_base)
 	andi	r_temp, r_temp, SPI_STATUS_TRDY
-	beq		r_temp, r_temp, 99b
+	beq		r_temp, r_zero, 99b
 	stwio	\rTX, REG_TXDATA(r_spim_base)
 99:	ldwio	r_temp, REG_STATUS(r_spim_base)
 	andi	r_temp, r_temp, SPI_STATUS_RRDY
@@ -413,8 +413,10 @@ decompress_lz4:
 	MOVI32	r_lz4_15, 15
 1:	// Read token
 	RCALL	flash_txrx_byte
+	// Read literal length
 	srli	r_lz4_lit, r_temp, 4
-	andi	r_lz4_match, r_temp, 15
+	// Read match length (-4)
+	and		r_lz4_match, r_temp, r_lz4_15
 	bne		r_lz4_lit, r_lz4_15, 3f
 2:	// Read additional literal length
 	RCALL	flash_txrx_byte
@@ -436,12 +438,13 @@ decompress_lz4:
 	sub		r_lz4_window, r_lz4_window, r_temp
 	beq		r_lz4_window, r_p_paddr, fill_remainder_area
 	bne		r_lz4_match, r_lz4_15, 7f
-6:	// Read additional match bytes
+6:	// Read additional match length
 	RCALL	flash_txrx_byte
 	add		r_lz4_match, r_lz4_match, r_temp
 	beq		r_temp, r_lz4_255, 6b
-7:	// Output matched data
+7:	// Adjust match length
 	addi	r_lz4_match, r_lz4_match, 4
+	// Output matched data
 	add		r_lz4_match, r_lz4_match, r_lz4_window
 8:	ldbu	r_temp, 0(r_lz4_window)
 	stb		r_temp, 0(r_p_paddr)
@@ -453,7 +456,7 @@ decompress_lz4:
 
 halt:
 	RCALL	flash_close
-1:	br		halt
+1:	br		1b
 
 /*
  * flash_close - Stop CS# output (Must be called by RCALL)
