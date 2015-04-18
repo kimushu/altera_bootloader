@@ -190,16 +190,10 @@ _start:
 
 	// Initialize instruction cache
 	MOVI32	r_temp, ICACHE_MAX_SIZE
-1:	initi	r_temp
-	addi	r_temp, r_temp, -32
+1:	addi	r_temp, r_temp, -32
+	initi	r_temp
 	bne		r_temp, r_zero, 1b
 	flushp
-
-	// Initialize data cache
-	MOVI32	r_temp, DCACHE_MAX_SIZE
-1:	initd	0(r_temp)
-	addi	r_temp, r_temp, -32
-	bne		r_temp, r_zero, 1b
 
 #if defined(EPCS_BOOTROM_WORDS)
 	// Get EPCS controller base address
@@ -393,6 +387,19 @@ next_program_header:
 	bne		r_e_phnum, r_zero, load_program_header
 
 start_program:
+	// Flush all data cache
+	MOVI32	r_temp, DCACHE_MAX_SIZE
+1:	addi	r_temp, r_temp, -32
+	flushd	0(r_temp)
+	bne		r_temp, r_zero, 1b
+
+	// Flush all instruction cache
+	MOVI32	r_temp, ICACHE_MAX_SIZE
+1:	addi	r_temp, r_temp, -32
+	flushi	r_temp
+	bne		r_temp, r_zero, 1b
+	flushp
+
 	jmp		r_e_entry
 
 #if defined(ENABLE_COMPRESS_LZSS)
