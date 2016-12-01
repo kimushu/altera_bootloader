@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <string.h>
 #include <elf.h>
+#include <lz4/lz4.h>
 #include <lz4/lz4hc.h>
 
 #define PT_LOAD_LZ4			(PT_LOPROC|0x20000)
@@ -14,11 +15,12 @@ static int select_method(const char *name);
 static int parse_options(int argc, char *argv[]);
 static int read_elf(void);
 static int write_elf(void);
-static size_t lz4hc_compressor(void *dest, const void *src, size_t srclen, size_t destlen);
+static ssize_t lz4hc_compressor(Elf32_Word *desttype, Elf32_Word srctype, void *dest, const void *src, size_t srclen, size_t destlen);
+static ssize_t common_decompressor(Elf32_Word *desttype, Elf32_Word srctype, void *dest, const void *src, size_t srclen, size_t destlen);
 
+static int decompress;
 static int verbose;
-static Elf32_Word method_type;
-static size_t (*method_func)(void *, const void *, size_t, size_t);
+static ssize_t (*method_func)(Elf32_Word *, Elf32_Word, void *, const void *, size_t, size_t);
 static const char *method_stopper;
 static size_t method_stoplen;
 static const char *infile;
@@ -71,10 +73,15 @@ static int select_method(const char *name)
 {
 	if(strcasecmp(name, "lz4") == 0)
 	{
-		method_type = PT_LOAD_LZ4;
 		method_func = lz4hc_compressor;
 		method_stopper = "\x00\x00\x00";
 		method_stoplen = 3;
+	}
+	else if(strcasecmp(name, "decompress") == 0)
+	{
+		method_func = common_decompressor;
+		method_stopper = "";
+		method_stoplen = 0;
 	}
 	else
 	{
@@ -89,7 +96,7 @@ static int parse_options(int argc, char *argv[])
 	int ch;
 
 	optind = 1;
-	while((ch = getopt(argc, argv, "m:v")) != -1)
+	while((ch = getopt(argc, argv, "m:dv")) != -1)
 	{
 		switch(ch)
 		{
@@ -99,6 +106,9 @@ static int parse_options(int argc, char *argv[])
 				error(0, 0, "unknown compress method: `%s'", optarg);
 				return EINVAL;
 			}
+			break;
+		case 'd':
+			select_method("decompress");
 			break;
 		case 'v':
 			++verbose;
@@ -170,6 +180,17 @@ static int read_elf(void)
 		return EIO;
 	}
 
+	if(verbose >= 2)
+	{
+		int i;
+		for(i = 0; i < 0x1800; i += 4)
+		{
+			if((i & 15) == 0) printf("%07x:", i);
+			printf(" %08x", *(unsigned *)(((unsigned char *)ehdr) + i));
+			if((i & 15) == 12) printf("\n");
+		}
+	}
+
 	if(memcmp(ehdr->e_ident, ELFMAG, SELFMAG) != 0 ||
 		ehdr->e_ident[EI_CLASS] != ELFCLASS32 ||
 		ehdr->e_ident[EI_DATA] != ELFDATA2LSB ||
@@ -196,6 +217,8 @@ static int write_elf(void)
 	Elf32_Phdr *phdr;
 	unsigned char *src;
 	unsigned char *buf;
+	size_t room;
+	ssize_t converted;
 
 	memcpy(&new_ehdr, ehdr, sizeof(new_ehdr));
 	new_ehdr.e_phoff = sizeof(Elf32_Ehdr);
@@ -212,14 +235,15 @@ static int write_elf(void)
 		ph_index < ehdr->e_phnum;
 		++ph_index, phdr = (Elf32_Phdr *)((uintptr_t)phdr + ehdr->e_phentsize))
 	{
-		if(phdr->p_type == PT_LOAD_LZ4)
+		Elf32_Word desttype;
+		if((*method_func)(&desttype, phdr->p_type, NULL, NULL, 0, 0) < 0)
 		{
-			// Already compressed
-			error(0, 0, "cannot process already compressed file");
+			// Not supported
+			error(0, 0, "cannot process p_type == 0x%08x", phdr->p_type);
 			return ENOTSUP;
 		}
 
-		if((phdr->p_type != PT_LOAD) || !(phdr->p_flags & PF_W))
+		if(((phdr->p_type != PT_LOAD) && (desttype != PT_LOAD)) || (phdr->p_filesz == 0))
 		{
 			phdr->p_type = PT_NULL;	// Mark as PT_NULL
 			if(verbose >= 1)
@@ -274,7 +298,12 @@ static int write_elf(void)
 				new_phdr.p_memsz, new_phdr.p_flags, new_phdr.p_align);
 		}
 
-		buf = (unsigned char *)malloc(phdr->p_filesz + 4);
+		room = phdr->p_filesz;
+		if(decompress)
+		{
+			room *= 8;
+		}
+		buf = (unsigned char *)malloc(room + 4);
 		if(!buf)
 		{
 			error(0, 0, "not enough memory");
@@ -282,13 +311,19 @@ static int write_elf(void)
 		}
 
 		src = (unsigned char *)ehdr + phdr->p_offset;
-		new_phdr.p_filesz = (*method_func)(buf, src, phdr->p_filesz, phdr->p_filesz - method_stoplen);
-		if(new_phdr.p_filesz > 0)
+		converted = (*method_func)(&new_phdr.p_type, phdr->p_type,
+				buf, src, phdr->p_filesz, room - method_stoplen);
+		if(converted > 0)
 		{
-			new_phdr.p_type = method_type;
+			new_phdr.p_filesz = converted;
 			memcpy(buf + new_phdr.p_filesz, method_stopper, method_stoplen);
 			memset(buf + new_phdr.p_filesz + method_stoplen, 0, 4);
 			src = buf;
+		}
+		else if(converted < 0)
+		{
+			error(0, 0, "cannot convert (%ld)", converted);
+			return EIO;
 		}
 		else
 		{
@@ -336,8 +371,46 @@ static int write_elf(void)
 	return 0;
 }
 
-static size_t lz4hc_compressor(void *dest, const void *src, size_t srclen, size_t destlen)
+static ssize_t lz4hc_compressor(Elf32_Word *desttype, Elf32_Word srctype,
+		void *dest, const void *src, size_t srclen, size_t destlen)
 {
+	if(srctype != PT_LOAD)
+	{
+		return -1;
+	}
+	if(!dest)
+	{
+		return 0;
+	}
+	*desttype = PT_LOAD_LZ4;
 	return LZ4_compressHC2_limitedOutput(src, dest, srclen, srclen, 16);
+}
+
+static ssize_t common_decompressor(Elf32_Word *desttype, Elf32_Word srctype,
+		void *dest, const void *src, size_t srclen, size_t destlen)
+{
+	if(srctype < PT_LOPROC)
+	{
+		*desttype = srctype;
+		if(!dest)
+		{
+			return 0;
+		}
+		memcpy(dest, src, srclen);
+		return srclen;
+	}
+
+	switch(srctype)
+	{
+	case PT_LOAD_LZ4:
+		*desttype = PT_LOAD;
+		if(!dest)
+		{
+			return 0;
+		}
+		return LZ4_decompress_safe(src, dest, srclen, destlen);
+	}
+
+	return -1;
 }
 
