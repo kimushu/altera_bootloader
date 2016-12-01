@@ -165,11 +165,15 @@ MAKE_TEMPLATE_COMMON = <<EOD
 HEX := $(basename $(ELF)).hex
 HEX_SECTIONS := .exceptions .text .rodata .rwdata .bss
 %s#{0;nil}
-$(HEX) : $(ELF) $(MAKEFILE_LIST)
+$(basename $(ELF)).compressed.elf: $(ELF) $(MAKEFILE_LIST)
 	@$(ECHO) Info: Creating $@
 	$(OBJCOPY) $(addprefix -j,$(HEX_SECTIONS)) $< $@ || (rm -f $@; false)
 	$(ELFCOMPRESS) $(addprefix -m,$(ELFCOMPRESS_METHOD)) $@ || (rm -f $@; false)
-	$(OBJCOPY) -Ibinary -Oihex $@ || (rm -f $@; false)
+	$(CROSS_COMPILE)readelf -l $@
+
+$(HEX) : $(basename $(ELF)).compressed.elf
+	@$(ECHO) Info: Creating $@
+	$(OBJCOPY) -Ibinary -Oihex $< $@ || (rm -f $@; false)
 	chmod -x $@
 .PHONY : hex
 hex : $(HEX)
